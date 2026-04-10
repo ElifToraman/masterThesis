@@ -1,7 +1,9 @@
 # Intent-based Orchestration of Serverless Applications on the Edge Environment
 
 - Google Doc: https://docs.google.com/document/d/1xbqqjmtBV4V2OLD5ANaIbH84hBZWOgD_vCm3HCb3diQ/edit?tab=t.0
-- Start-Talk Presentation: https://docs.google.com/presentation/d/1HWVVsK8waD55ea7L2RZmUNY0H8EtgBZ93Fs5xUBCtwU/edit?usp=sharing
+- Start-Talk Presentation: https://docs.google.com/presentation/d/1HWVVsK8waD55ea7L2RZmUNY0H8EtgBZ93Fs5xUBCtwU/edit?usp=sharing (27.04.2026)
+- Overleaf Mini-Survey Paper : https://www.overleaf.com/project/694e5cc4b66cecf94dedbf6b
+- Overleaf Paper : https://www.overleaf.com/project/6973a2af12c63cd8bd7f011a
 
 # Edge-Cloud Testbed Setup on Chameleon Cloud
 
