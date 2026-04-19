@@ -5,7 +5,9 @@
 - Overleaf Mini-Survey Paper : https://www.overleaf.com/project/694e5cc4b66cecf94dedbf6b
 - Overleaf Paper : https://www.overleaf.com/project/6973a2af12c63cd8bd7f011a
 
-# Edge-Cloud Testbed Setup on Chameleon Cloud
+# Edge-Cloud Serverless Testbed on Chameleon Cloud
+
+> Master's Thesis: Intent-based Orchestration of Serverless Applications on the Edge Environment
 
 A multi-cluster Kubernetes testbed for edge-cloud federation research, built on Chameleon Cloud using Kind, Submariner, Knative, and Prometheus.
 
@@ -13,48 +15,86 @@ A multi-cluster Kubernetes testbed for edge-cloud federation research, built on 
 
 ## Architecture Overview
 
+### Physical Architecture
+
 ```
-VM1 (edge-vm)                        VM2 (cloud-vm)
-10.52.0.213                          10.52.2.163
-┌─────────────────────────┐          ┌─────────────────────────┐
-│  Kind cluster (edge)    │          │  Kind cluster (cloud)   │
-│  10.244.0.0/16 pods     │          │  10.245.0.0/16 pods     │
-│  10.96.0.0/16 services  │          │  10.97.0.0/16 services  │
-│                         │          │                         │
-│  ┌─────────────────┐    │          │  ┌─────────────────┐    │
-│  │ Knative Serving │    │          │  │ Knative Serving │    │
-│  │ + Kourier       │    │          │  │ + Kourier       │    │
-│  └─────────────────┘    │          │  └─────────────────┘    │
-│  ┌─────────────────┐    │          │  ┌─────────────────┐    │
-│  │ Prometheus      │    │          │  │ Prometheus      │    │
-│  │ + Grafana       │    │          │  │ + Grafana       │    │
-│  └─────────────────┘    │          │  └─────────────────┘    │
-│  ┌─────────────────┐    │          │  ┌─────────────────┐    │
-│  │ Submariner GW   │◄───┼──────────┼──│ Submariner GW   │    │
-│  │ (libreswan)     │    │IPsec/NAT │  │ (libreswan)     │    │
-│  └─────────────────┘    │          │  └─────────────────┘    │
-└─────────────────────────┘          └─────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                        Chameleon Cloud                              │
+│                                                                     │
+│   VM1 (edge-vm)                        VM2 (cloud-vm)              │
+│   10.52.0.213                          10.52.2.163                  │
+│   Ubuntu 22.04 · x86_64               Ubuntu 22.04 · x86_64        │
+│                                                                     │
+│  ┌──────────────────────────┐         ┌──────────────────────────┐  │
+│  │  Kind cluster (edge)     │         │  Kind cluster (cloud)    │  │
+│  │  k8s v1.33.1             │         │  k8s v1.35.1             │  │
+│  │  pods:    10.244.0.0/16  │         │  pods:    10.245.0.0/16  │  │
+│  │  services:10.96.0.0/16   │         │  services:10.97.0.0/16   │  │
+│  │                          │         │                          │  │
+│  │  ┌────────────────────┐  │         │  ┌────────────────────┐  │  │
+│  │  │  Knative Serving   │  │         │  │  Knative Serving   │  │  │
+│  │  │  + Kourier v1.16   │  │         │  │  + Kourier v1.16   │  │  │
+│  │  └────────────────────┘  │         │  └────────────────────┘  │  │
+│  │  ┌────────────────────┐  │         │  ┌────────────────────┐  │  │
+│  │  │  Prometheus        │  │         │  │  Prometheus        │  │  │
+│  │  │  + Grafana         │  │         │  │  + Grafana         │  │  │
+│  │  └────────────────────┘  │         │  └────────────────────┘  │  │
+│  │  ┌────────────────────┐  │         │  ┌────────────────────┐  │  │
+│  │  │  Submariner GW     │◄─┼─────────┼──│  Submariner GW     │  │  │
+│  │  │  (libreswan/IPsec) │  │  tunnel │  │  (libreswan/IPsec) │  │  │
+│  │  └────────────────────┘  │         │  └────────────────────┘  │  │
+│  └──────────────────────────┘         └──────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────────┘
 ```
+
+### Software Stack (each VM)
+
+```
+┌─────────────────────────────────────┐
+│  Layer 4: Knative Serving + Kourier │  ← serverless functions
+├─────────────────────────────────────┤
+│  Layer 3: Kubernetes (Kind cluster) │  ← orchestration
+├─────────────────────────────────────┤
+│  Layer 2: Kind (kindest/node image) │  ← k8s in Docker
+├─────────────────────────────────────┤
+│  Layer 1: Docker 28.2.2             │  ← container runtime
+├─────────────────────────────────────┤
+│  Ubuntu 22.04 LTS · x86_64          │  ← VM OS
+└─────────────────────────────────────┘
+```
+
+---
+
+## Component Versions
+
+| Component | edge-vm | cloud-vm |
+|-----------|---------|----------|
+| OS | Ubuntu 22.04 LTS x86_64 | Ubuntu 22.04 LTS x86_64 |
+| Docker | 28.2.2 | 28.2.2 |
+| Kind image | kindest/node:v1.33.1 | kindest/node:v1.35.1 |
+| Kubernetes | v1.33.1 | v1.35.1 |
+| Knative Serving | v1.21.2 | v1.21.2 |
+| Kourier | v1.16.0 | v1.16.0 |
+| Submariner | v0.23.1 | v0.23.1 |
+| Cable driver | libreswan | libreswan |
+| Prometheus stack | kube-prometheus-stack | kube-prometheus-stack |
 
 ---
 
 ## Prerequisites
 
-- 2 x Chameleon Cloud VMs (Ubuntu 22.04, recommended: m1.large or larger)
+- 2 x Chameleon Cloud VMs (Ubuntu 22.04, m1.large or larger)
 - SSH access to both VMs
 - Both VMs on the same Chameleon network segment (10.52.x.x)
+- Docker Hub account (for pushing your own function images)
 
 ---
 
 ## Step 1 — Provision VMs on Chameleon Cloud
 
-Reserve two bare-metal or KVM nodes on [chameleoncloud.org](https://chameleoncloud.org).
+Reserve two KVM nodes on [chameleoncloud.org](https://chameleoncloud.org).
 
 ```bash
-# Note your floating IPs after reservation
-# VM1 (edge):  e.g. 129.114.x.x  → internal 10.52.0.213
-# VM2 (cloud): e.g. 129.114.x.x  → internal 10.52.2.163
-
 ssh -i ~/.ssh/chameleon.pem cc@<edge-floating-ip>
 ssh -i ~/.ssh/chameleon.pem cc@<cloud-floating-ip>
 ```
@@ -130,17 +170,14 @@ kubectl cluster-info --context kind-cloud
 
 ## Step 4 — Install Submariner
 
-Submariner federates the two clusters so pods can communicate across cluster boundaries using DNS (`svc.clusterset.local`).
-
 ### On cloud-vm — deploy the broker
 
 ```bash
 subctl deploy-broker
-# This creates a broker-info.subm file — copy it to edge-vm
 scp broker-info.subm cc@<edge-internal-ip>:~
 ```
 
-### On cloud-vm — join cloud cluster
+### On cloud-vm — join
 
 ```bash
 subctl join broker-info.subm \
@@ -149,7 +186,7 @@ subctl join broker-info.subm \
   --cable-driver libreswan
 ```
 
-### On edge-vm — join edge cluster
+### On edge-vm — join
 
 ```bash
 subctl join broker-info.subm \
@@ -158,12 +195,11 @@ subctl join broker-info.subm \
   --cable-driver libreswan
 ```
 
-### Verify connection
+### Verify
 
 ```bash
-# On either VM
 subctl show connections
-# Expected: STATUS = connected
+# Expected: STATUS = connected, RTT avg shown
 ```
 
 ---
@@ -171,20 +207,15 @@ subctl show connections
 ## Step 5 — Install Knative Serving (both VMs)
 
 ```bash
-# Install CRDs and core
 kubectl apply -f https://github.com/knative/serving/releases/download/knative-v1.21.2/serving-crds.yaml
 kubectl apply -f https://github.com/knative/serving/releases/download/knative-v1.21.2/serving-core.yaml
-
-# Install Kourier as the ingress
 kubectl apply -f https://github.com/knative/net-kourier/releases/download/knative-v1.16.0/kourier.yaml
 
-# Configure Knative to use Kourier
 kubectl patch configmap/config-network \
   -n knative-serving \
   --type merge \
   -p '{"data":{"ingress-class":"kourier.ingress.networking.knative.dev"}}'
 
-# Verify
 kubectl get pods -n knative-serving
 kubectl get pods -n kourier-system
 ```
@@ -210,108 +241,205 @@ kubectl get pods -n monitoring
 
 ---
 
-## Step 7 — Deploy Test Workloads
+## Step 7 — Deploy and Test Workloads
 
-### Single-cluster test (nginx pod)
+### Task 1 — Cross-cluster pod deployment (plain Kubernetes)
+
+Deploy a pod to cloud cluster FROM edge-vm using kubeconfig:
 
 ```bash
-# On edge-vm
-kubectl create deployment hello-edge --image=nginx
-kubectl expose deployment hello-edge --port 80 --target-port 80
+# On edge-vm — target cloud cluster
+kubectl --kubeconfig=/home/cc/cloud-kubeconfig.yaml \
+  run hello-from-edge --image=nginx --restart=Never
 
-# Test locally
-kubectl run test --rm -it --image=busybox -- wget -O- http://hello-edge
+# Verify pod runs on cloud-control-plane
+kubectl --kubeconfig=/home/cc/cloud-kubeconfig.yaml \
+  get pods -o wide
+# Expected: hello-from-edge Running on cloud-control-plane
 ```
 
-### Export service for cross-cluster access
+### Task 2 — Knative serverless function (your own code)
+
+Write, build, and deploy a Python function as a Knative Service:
 
 ```bash
-# On edge-vm
-subctl export service hello-edge
-kubectl get serviceexports -A
+# 1. Write the function locally (on your laptop)
+mkdir hello-knative && cd hello-knative
 
-# On cloud-vm — verify import and test
-kubectl get serviceimports -A
-kubectl run tmp-shell --rm -it --image=busybox -- \
-  wget -O- http://hello-edge.default.svc.clusterset.local
-```
+cat > app.py << 'EOF'
+from flask import Flask
+import os
 
-### Knative hello-world service
+app = Flask(__name__)
 
-```bash
-# On edge-vm
-kubectl apply -f - <<EOF
+@app.route('/', methods=['GET', 'POST'])
+def hello():
+    target = os.environ.get('TARGET', 'World')
+    return f'Hello {target}! This is my Knative serverless function.\n'
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
+EOF
+
+cat > requirements.txt << 'EOF'
+flask>=2.0.0
+EOF
+
+cat > Dockerfile << 'EOF'
+FROM python:3.11-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install -r requirements.txt
+COPY app.py .
+EXPOSE 8080
+CMD ["python", "app.py"]
+EOF
+
+# 2. Build for linux/amd64 (Chameleon VMs are x86)
+docker buildx build --platform linux/amd64 \
+  -t <your-dockerhub>/hello-knative:v1 --push .
+
+# 3. Deploy as Knative Service on edge-vm
+kubectl apply -f - << EOF
 apiVersion: serving.knative.dev/v1
 kind: Service
 metadata:
-  name: hello-knative
+  name: hello-python
   namespace: default
 spec:
   template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/min-scale: "1"
     spec:
       containers:
-      - image: gcr.io/knative-samples/helloworld-go
+      - image: <your-dockerhub>/hello-knative:v1
         env:
         - name: TARGET
           value: "Edge Cluster"
+        ports:
+        - containerPort: 8080
 EOF
 
-kubectl get ksvc hello-knative
+# 4. Verify Knative resources
+kubectl get ksvc hello-python      # READY: True
+kubectl get revisions              # shows revision versions
+kubectl get routes                 # shows traffic routing
+
+# 5. Invoke
+kubectl exec <any-running-pod> -- \
+  curl -s http://hello-python.default.svc.cluster.local
+# Output: Hello Edge Cluster! This is my Knative serverless function.
+```
+
+### Task 3 — Deploy Knative function from edge TO cloud
+
+```bash
+# From edge-vm — deploy to cloud cluster
+kubectl --kubeconfig=/home/cc/cloud-kubeconfig.yaml apply -f - << EOF
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: hello-python
+  namespace: default
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/min-scale: "1"
+    spec:
+      containers:
+      - image: <your-dockerhub>/hello-knative:v1
+        env:
+        - name: TARGET
+          value: "Cloud Cluster - deployed from Edge"
+        ports:
+        - containerPort: 8080
+EOF
+
+# Verify on cloud — from edge
+kubectl --kubeconfig=/home/cc/cloud-kubeconfig.yaml get ksvc hello-python
+kubectl --kubeconfig=/home/cc/cloud-kubeconfig.yaml get revisions
+kubectl --kubeconfig=/home/cc/cloud-kubeconfig.yaml get routes
+kubectl --kubeconfig=/home/cc/cloud-kubeconfig.yaml get pods -o wide
+# Pod runs on cloud-control-plane
+
+# Invoke from inside the cloud pod
+kubectl --kubeconfig=/home/cc/cloud-kubeconfig.yaml \
+  exec $(kubectl --kubeconfig=/home/cc/cloud-kubeconfig.yaml \
+  get pods -l serving.knative.dev/service=hello-python \
+  -o jsonpath='{.items[0].metadata.name}') \
+  -c user-container -- python3 -c \
+  "import urllib.request; print(urllib.request.urlopen('http://localhost:8080').read().decode())"
+# Output: Hello Cloud Cluster - deployed from Edge! This is my Knative serverless function.
+```
+
+### Cross-cluster Knative invocation via Submariner
+
+```bash
+# On edge-vm — export Kourier gateway
+subctl export service kourier-internal -n kourier-system
+
+# On cloud-vm — invoke edge's function
+kubectl run curl-test --rm -it --image=curlimages/curl -- \
+  curl -s \
+  -H "Host: hello-python.default.svc.cluster.local" \
+  http://kourier-internal.kourier-system.svc.clusterset.local
+# Output: Hello Edge Cluster! This is my Knative serverless function.
 ```
 
 ---
 
-## Step 8 — Cross-Cluster Knative Invocation
+## Stack Verification
 
-This allows a pod on cloud to invoke a Knative service running on edge, through Submariner's service mesh.
+Run this on both VMs to confirm all layers:
 
 ```bash
-# On edge-vm — export Kourier's internal gateway
-subctl export service kourier-internal -n kourier-system
+echo "=== LAYER 1: DOCKER ===" && docker --version
+echo "=== LAYER 2: KIND IN DOCKER ===" && docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}"
+echo "=== LAYER 3: KUBERNETES ===" && kubectl get nodes -o wide
+echo "=== LAYER 4: KNATIVE ===" && kubectl get pods -n knative-serving
+echo "=== LAYER 5: FUNCTIONS ===" && kubectl get ksvc -A
+```
 
-# On cloud-vm — call edge's Knative service
-kubectl run curl-test --rm -it --image=curlimages/curl -- \
-  curl -s \
-  -H "Host: hello-knative.default.svc.cluster.local" \
-  http://kourier-internal.kourier-system.svc.clusterset.local
+### Verified output — edge-vm
 
-# Expected output: Hello Edge Cluster!
+```
+LAYER 1: Docker version 28.2.2
+LAYER 2: edge-control-plane   kindest/node:v1.33.1   Up 3 weeks
+LAYER 3: edge-control-plane   Ready   control-plane   v1.33.1   172.19.0.2
+LAYER 4: activator, autoscaler, controller, net-kourier-controller, webhook — all 1/1 Running
+LAYER 5: hello-python True, hello-knative True
+```
+
+### Verified output — cloud-vm
+
+```
+LAYER 1: Docker version 28.2.2
+LAYER 2: cloud-control-plane   kindest/node:v1.35.1   Up 4 weeks
+LAYER 3: cloud-control-plane   Ready   control-plane   v1.35.1   172.18.0.2
+LAYER 4: activator, autoscaler, controller, net-kourier-controller, webhook — all 1/1 Running
+LAYER 5: hello-python True, hello-knative True, hello-from-edge True
 ```
 
 ---
 
 ## Troubleshooting
 
-### Issue 1: Submariner shows `connected` but cross-cluster traffic fails
-
-**Symptom:** `subctl show connections` shows `connected` with RTT, but `wget` from a pod returns `No route to host`.
-
-**Root cause:** Submariner's health checker uses ICMP ping (`NET_RAW` capability) to verify tunnel liveness. Inside Kind containers, this capability is restricted, causing health checks to fail silently while the control plane still reports `connected`.
-
-**Fix — disable connection health check:**
+### Submariner connected but traffic fails
 
 ```bash
-# On both cloud-vm and edge-vm
+# Disable health check (NET_RAW not available in Kind)
 kubectl patch submariner submariner \
   -n submariner-operator \
   --type=merge \
   -p '{"spec":{"connectionHealthCheck":{"enabled":false}}}'
 
-# Restart gateway pods on both VMs
 kubectl rollout restart daemonset/submariner-gateway -n submariner-operator
-kubectl rollout status daemonset/submariner-gateway -n submariner-operator
-
-# Verify connection
 subctl show connections
 ```
 
-### Issue 2: DNS resolves but connection refused
-
-**Symptom:** `nslookup hello-edge.default.svc.clusterset.local` returns an IP, but `wget` hangs or fails.
-
-**Root cause:** The ServiceImport's `use-clusterset-ip` annotation defaults to `false`, causing DNS to return the remote cluster's ClusterIP directly instead of routing through Submariner's proxy.
-
-**Fix:**
+### DNS resolves but connection refused
 
 ```bash
 kubectl annotate serviceimport <service-name> \
@@ -319,38 +447,27 @@ kubectl annotate serviceimport <service-name> \
   --overwrite -n default
 ```
 
-### Issue 3: Kourier 404 on install
-
-**Symptom:** `error: unable to read URL .../knative-v1.21.2/kourier.yaml, server reported 404`
-
-**Fix:** Kourier releases don't always align with Knative serving releases. Use v1.16.0 of Kourier with Knative v1.21:
+### Docker image exec format error
 
 ```bash
+# Rebuild for correct architecture
+docker buildx build --platform linux/amd64 \
+  -t <your-image>:v2 --push .
+```
+
+### Kourier 404 on install
+
+```bash
+# Use v1.16.0 with Knative v1.21
 kubectl apply -f https://github.com/knative/net-kourier/releases/download/knative-v1.16.0/kourier.yaml
 ```
 
-### Issue 4: Submariner gateway pod has no `ping` or `wget`
-
-This is expected — the Submariner gateway image is minimal. Use `/dev/tcp` for connectivity tests:
+### Cross-cluster VXLAN RX always 0
 
 ```bash
-kubectl exec -n submariner-operator $GWPOD -- \
-  bash -c "echo > /dev/tcp/<ip>/80" 2>&1
-```
-
-### Issue 5: Cross-cluster VXLAN tunnel RX always 0
-
-**Symptom:** `subctl show connections` shows `connected`, but `ip -s link show vxlan-tunnel` shows RX bytes = 0.
-
-**Root cause:** Submariner was installed with `--cable-driver vxlan` but the health checker requires `NET_RAW`. The actual working cable driver for this Kind-on-VM setup is `libreswan` (IPsec).
-
-**Fix — re-join with libreswan:**
-
-```bash
+# Re-join with libreswan instead of vxlan
 subctl join broker-info.subm \
-  --clusterid <cluster-id> \
-  --natt=true \
-  --cable-driver libreswan
+  --clusterid <id> --natt=true --cable-driver libreswan
 ```
 
 ---
@@ -358,54 +475,21 @@ subctl join broker-info.subm \
 ## Verification Checklist
 
 ```bash
-# 1. Both clusters healthy
-kubectl get nodes                          # Ready
-
-# 2. Submariner connected
-subctl show connections                    # STATUS: connected
-
-# 3. Cross-cluster DNS works
-kubectl run tmp --rm -it --image=busybox -- \
-  nslookup hello-edge.default.svc.clusterset.local
-
-# 4. Cross-cluster traffic works
-kubectl run tmp --rm -it --image=busybox -- \
-  wget -O- http://hello-edge.default.svc.clusterset.local
-
-# 5. Knative working
-kubectl get ksvc                           # READY: True
-
-# 6. Cross-cluster Knative invocation
-kubectl run curl-test --rm -it --image=curlimages/curl -- \
-  curl -s \
-  -H "Host: hello-knative.default.svc.cluster.local" \
-  http://kourier-internal.kourier-system.svc.clusterset.local
-
-# 7. Prometheus running
-kubectl get pods -n monitoring             # All Running
+kubectl get nodes                    # Ready
+subctl show connections              # connected
+kubectl get pods -n knative-serving  # all Running
+kubectl get pods -n monitoring       # all Running
+kubectl get ksvc -A                  # READY: True
+subctl show all                      # full status
 ```
-
----
-
-## Component Versions
-
-| Component | Version |
-|-----------|---------|
-| Kubernetes (edge) | v1.33.1 |
-| Kubernetes (cloud) | v1.35.1 |
-| Kind | v0.24.0 |
-| Submariner | v0.23.1 |
-| Knative Serving | v1.21.2 |
-| Kourier | v1.16.0 |
-| kube-prometheus-stack | latest |
-| Cable driver | libreswan |
 
 ---
 
 ## References
 
 - [Chameleon Cloud](https://chameleoncloud.org)
-- [Kind documentation](https://kind.sigs.k8s.io)
-- [Submariner documentation](https://submariner.io)
-- [Knative documentation](https://knative.dev)
-- [subctl CLI reference](https://submariner.io/operations/deployment/subctl)
+- [Kind](https://kind.sigs.k8s.io)
+- [Submariner](https://submariner.io)
+- [Knative](https://knative.dev)
+- [Prometheus](https://prometheus.io)
+- Filinis et al. (2024) — Intent-driven orchestration of serverless applications in the computing continuum. *Future Generation Computer Systems*, 154, 72–86.
