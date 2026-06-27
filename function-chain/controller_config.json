@@ -1,0 +1,7 @@
+{
+  "work_ms": 50,
+  "samples": 5,
+  "ignore_first_sample": true,
+  "decision_metric": "warm_internal_chain_latency",
+  "candidate_targets": ["vm1", "vm2"]
+}

@@ -1,347 +1,950 @@
-# Intent-based Orchestration of Serverless Applications on the Edge Environment
+# Intent-Based Serverless Edge Testbed
 
-- Google Doc: https://docs.google.com/document/d/1xbqqjmtBV4V2OLD5ANaIbH84hBZWOgD_vCm3HCb3diQ/edit?tab=t.0
-- Start-Talk Presentation: https://docs.google.com/presentation/d/1HWVVsK8waD55ea7L2RZmUNY0H8EtgBZ93Fs5xUBCtwU/edit?usp=sharing (27.04.2026)
-- Overleaf Mini-Survey Paper : https://www.overleaf.com/project/694e5cc4b66cecf94dedbf6b
-- Overleaf Paper : https://www.overleaf.com/project/6973a2af12c63cd8bd7f011a
+> Master's Thesis: **Intent-Based Orchestration of Serverless Applications on the Edge Environment**  
+> University of Klagenfurt — Supervisor: Dr. Reza Farahani  
+> Baseline paper: Filinis et al. (2024) — *Intent-driven orchestration of serverless applications in the computing continuum.* Future Generation Computer Systems, 154, 72–86.
 
-# Edge-Cloud Serverless Testbed on Chameleon Cloud
+This repository contains a research prototype for intent-based orchestration of serverless function chains on edge environments.
 
-> Master's Thesis: Intent-based Orchestration of Serverless Applications on the Edge Environment
+The prototype uses two Chameleon Cloud virtual machines as independent edge clusters. Each VM runs a Kind-based Kubernetes cluster with Knative Serving, Kourier, a local Docker registry, and Prometheus/Grafana monitoring. VM-1 additionally hosts the intent controller. The controller reads a high-level latency intent, collects monitoring and probing data from both edge clusters, selects a suitable VM, deploys the complete function chain to that VM, and returns the selected public entry URL.
 
-A multi-cluster Kubernetes testbed for edge-cloud federation research, built on Chameleon Cloud using Kind, Submariner, Knative, and Prometheus.
-
----
-
-## Architecture Overview
-
-### Physical Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        Chameleon Cloud                              │
-│                                                                     │
-│   VM1 (edge-vm)                        VM2 (cloud-vm)              │
-│   10.52.0.213                          10.52.2.163                  │
-│   Ubuntu 22.04 · x86_64               Ubuntu 22.04 · x86_64        │
-│                                                                     │
-│  ┌──────────────────────────┐         ┌──────────────────────────┐  │
-│  │  Kind cluster (edge)     │         │  Kind cluster (cloud)    │  │
-│  │  k8s v1.33.1             │         │  k8s v1.35.1             │  │
-│  │  pods:    10.244.0.0/16  │         │  pods:    10.245.0.0/16  │  │
-│  │  services:10.96.0.0/16   │         │  services:10.97.0.0/16   │  │
-│  │                          │         │                          │  │
-│  │  ┌────────────────────┐  │         │  ┌────────────────────┐  │  │
-│  │  │  Knative Serving   │  │         │  │  Knative Serving   │  │  │
-│  │  │  + Kourier v1.16   │  │         │  │  + Kourier v1.16   │  │  │
-│  │  └────────────────────┘  │         │  └────────────────────┘  │  │
-│  │  ┌────────────────────┐  │         │  ┌────────────────────┐  │  │
-│  │  │  Prometheus        │  │         │  │  Prometheus        │  │  │
-│  │  │  + Grafana         │  │         │  │  + Grafana         │  │  │
-│  │  └────────────────────┘  │         │  └────────────────────┘  │  │
-│  │  ┌────────────────────┐  │         │  ┌────────────────────┐  │  │
-│  │  │  Submariner GW     │◄─┼─────────┼──│  Submariner GW     │  │  │
-│  │  │  (libreswan/IPsec) │  │  tunnel │  │  (libreswan/IPsec) │  │  │
-│  │  └────────────────────┘  │         │  └────────────────────┘  │  │
-│  └──────────────────────────┘         └──────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────────┘
-```
-
-### Software Stack (each VM)
-
-```
-┌─────────────────────────────────────┐
-│  Layer 4: Knative Serving + Kourier │  ← serverless functions
-├─────────────────────────────────────┤
-│  Layer 3: Kubernetes (Kind cluster) │  ← orchestration
-├─────────────────────────────────────┤
-│  Layer 2: Kind (kindest/node image) │  ← k8s in Docker
-├─────────────────────────────────────┤
-│  Layer 1: Docker 28.2.2             │  ← container runtime
-├─────────────────────────────────────┤
-│  Ubuntu 22.04 LTS · x86_64          │  ← VM OS
-└─────────────────────────────────────┘
-```
+The current implementation focuses on **whole-chain placement** of a serverless function chain across two edge clusters.
 
 ---
 
-## Component Versions
+## Current Prototype Summary
 
-| Component | edge-vm | cloud-vm |
-|-----------|---------|----------|
-| OS | Ubuntu 22.04 LTS x86_64 | Ubuntu 22.04 LTS x86_64 |
-| Docker | 28.2.2 | 28.2.2 |
-| Kind image | kindest/node:v1.33.1 | kindest/node:v1.35.1 |
-| Kubernetes | v1.33.1 | v1.35.1 |
-| Knative Serving | v1.21.2 | v1.21.2 |
-| Kourier | v1.16.0 | v1.16.0 |
-| Submariner | v0.23.1 | v0.23.1 |
-| Cable driver | libreswan | libreswan |
-| Prometheus stack | kube-prometheus-stack | kube-prometheus-stack |
+The evaluated application is a three-function serverless chain:
+
+```text
+f1 -> f2 -> f3
+````
+
+The client invokes only `f1`. Function `f1` calls `f2`, `f2` calls `f3`, and the response returns back through the chain.
+
+The current controller supports whole-chain placement. This means all functions are deployed to the same selected VM:
+
+```text
+[f1, f2, f3] = [vm1, vm1, vm1]
+```
+
+or:
+
+```text
+[f1, f2, f3] = [vm2, vm2, vm2]
+```
+
+Automatic split placement, for example `[vm1, vm2, vm1]`, is not part of the current automatic controller and is treated as future work.
 
 ---
 
-## Prerequisites
+## Architecture
 
-- 2 x Chameleon Cloud VMs (Ubuntu 22.04, m1.large or larger)
-- SSH access to both VMs
-- Both VMs on the same Chameleon network segment (10.52.x.x)
-- Docker Hub account (for pushing your own function images)
+```text
+Local Developer MacBook
+├── ~/thesis/function-chain/
+│   ├── f1/
+│   ├── f2/
+│   ├── f3/
+│   ├── chain_intent.json
+│   ├── application_descriptor.json
+│   ├── controller_config.json
+│   ├── chain_controller.env
+│   ├── Makefile
+│   └── scripts/run_chain_workflow.sh
+│
+├── Docker Desktop
+│   └── builds linux/amd64 function images
+│
+├── kubectl / kn / func
+│   └── build, deploy, inspect, and invoke services
+│
+└── SSH tunnels
+    ├── 127.0.0.1:5000 -> VM-1 registry
+    ├── 127.0.0.1:5001 -> VM-2 registry
+    ├── 127.0.0.1:6443 -> VM-1 Kubernetes API
+    └── 127.0.0.1:6444 -> VM-2 Kubernetes API
+
+
+VM-1: 129.114.25.182 / 10.56.1.249
+┌────────────────────────────────────────────┐
+│ Ubuntu 22.04.5 LTS Chameleon KVM VM        │
+│ Docker daemon                              │
+│ registry:2 on 127.0.0.1:5000               │
+│ kind: vm1-cluster                          │
+│ Kubernetes v1.35.0                         │
+│ Knative Serving v1.21.2 + Kourier          │
+│ Prometheus + Grafana                       │
+│                                            │
+│ Intent controller                          │
+│ ~/chain-controller/scripts/                │
+│   chain_controller.sh                      │
+│   collect_chain_metrics.sh                 │
+│   decide_chain_placement.sh                │
+│   deploy_chain_selected.sh                 │
+└────────────────────────────────────────────┘
+
+
+VM-2: 129.114.25.80 / 10.56.2.149
+┌────────────────────────────────────────────┐
+│ Ubuntu 22.04.5 LTS Chameleon KVM VM        │
+│ Docker daemon                              │
+│ registry:2 on 127.0.0.1:5000               │
+│ kind: vm2-cluster                          │
+│ Kubernetes v1.35.0                         │
+│ Knative Serving v1.21.2 + Kourier          │
+│ Prometheus + Grafana                       │
+└────────────────────────────────────────────┘
+```
 
 ---
 
-## Step 1 — Provision VMs on Chameleon Cloud
+## Testbed Configuration
 
-Reserve two KVM nodes on [chameleoncloud.org](https://chameleoncloud.org).
+| Node | Role                             |        Public IP |  Kind API endpoint | Configuration                  |
+| ---- | -------------------------------- | ---------------: | -----------------: | ------------------------------ |
+| VM-1 | Edge cluster + intent controller | `129.114.25.182` | `10.56.1.249:6443` | `m1.large`, Ubuntu 22.04.5 LTS |
+| VM-2 | Edge cluster                     |  `129.114.25.80` | `10.56.2.149:6443` | `m1.large`, Ubuntu 22.04.5 LTS |
+
+Both VMs use the same Chameleon flavor:
+
+```text
+4 vCPU
+8 GB RAM
+40 GB disk
+```
+
+---
+
+## Software Stack
+
+Each VM uses the following layered stack:
+
+```text
+Layer 4: Monitoring/control layer
+         Prometheus, Grafana, and VM-1 intent controller
+
+Layer 3: Serverless layer
+         Knative Serving and Kourier
+
+Layer 2: Kubernetes orchestration layer
+         Kind Kubernetes cluster
+
+Layer 1: Container runtime and registry layer
+         Docker, Kind node container, local registry
+
+Layer 0: Infrastructure layer
+         Ubuntu 22.04.5 LTS on Chameleon KVM VM
+```
+
+Two container runtimes are involved. Docker runs on the VM and starts the Kind node container and local registry. Inside the Kind node, containerd runs Kubernetes workloads such as Knative, Kourier, Prometheus, and the function pods.
+
+---
+
+## Repository Structure
+
+Recommended local repository structure:
+
+```text
+.
+├── f1/
+│   └── function source code for f1
+├── f2/
+│   └── function source code for f2
+├── f3/
+│   └── function source code for f3
+├── scripts/
+│   ├── run_chain_workflow.sh
+│   ├── deploy_placement.sh
+│   ├── deploy_both_all_chain_existing.sh
+│   └── run_scheduling_experiment.sh
+├── chain_intent.json
+├── application_descriptor.json
+├── controller_config.json
+├── chain_controller.env
+├── Makefile
+└── README.md
+```
+
+VM-1 controller structure:
+
+```text
+~/chain-controller/
+├── chain_intent.json
+├── application_descriptor.json
+├── controller_config.json
+├── controller.env
+└── scripts/
+    ├── chain_controller.sh
+    ├── collect_chain_metrics.sh
+    ├── decide_chain_placement.sh
+    └── deploy_chain_selected.sh
+```
+
+---
+
+## Input Files
+
+The controller input is intentionally separated into three files.
+
+### `chain_intent.json`
+
+The intent file contains the high-level objective and constraints. It should not contain probing or experiment parameters.
+
+```json
+{
+  "apiVersion": "intent.dsg/v1alpha1",
+  "kind": "Intent",
+  "metadata": {
+    "name": "function-chain-low-latency"
+  },
+  "spec": {
+    "targetRef": {
+      "kind": "ServerlessApplication",
+      "name": "function-chain"
+    },
+    "objectives": [
+      {
+        "name": "low-latency",
+        "metric": "chain_latency_ms",
+        "operator": "<=",
+        "value": 700,
+        "measuredBy": "controller/warm_internal_chain_latency"
+      }
+    ],
+    "properties": [
+      {
+        "name": "placement-scope",
+        "value": "edge"
+      }
+    ],
+    "constraints": [
+      {
+        "name": "placement-mode",
+        "value": "whole-chain"
+      }
+    ]
+  }
+}
+```
+
+Meaning:
+
+```text
+Application: function-chain
+Objective: low latency
+Requirement: chain latency <= 700 ms
+Measurement source: controller warm internal chain latency
+Placement scope: edge
+Placement mode: whole chain
+```
+
+### `application_descriptor.json`
+
+The application descriptor contains the topology of the serverless application.
+
+```json
+{
+  "application": "function-chain",
+  "entrypoint": "f1",
+  "functions": [
+    {
+      "name": "f1",
+      "next": "f2"
+    },
+    {
+      "name": "f2",
+      "next": "f3"
+    },
+    {
+      "name": "f3",
+      "next": null
+    }
+  ]
+}
+```
+
+Meaning:
+
+```text
+entrypoint = f1
+chain = f1 -> f2 -> f3
+```
+
+### `controller_config.json`
+
+The controller configuration contains experiment and probing parameters. These are not part of the high-level intent.
+
+```json
+{
+  "work_ms": 50,
+  "samples": 5,
+  "ignore_first_sample": true,
+  "decision_metric": "warm_internal_chain_latency",
+  "candidate_targets": ["vm1", "vm2"]
+}
+```
+
+Meaning:
+
+```text
+work_ms: simulated work per function
+samples: number of probing requests per candidate VM
+ignore_first_sample: ignore cold-start or scale-from-zero sample
+decision_metric: metric used to select the VM
+candidate_targets: edge VMs considered by the controller
+```
+
+### `chain_controller.env` / `controller.env`
+
+The local workflow creates a stable registry environment file and copies it to VM-1 as `~/chain-controller/controller.env`.
 
 ```bash
-ssh -i ~/.ssh/chameleon.pem cc@<edge-floating-ip>
-ssh -i ~/.ssh/chameleon.pem cc@<cloud-floating-ip>
+REGISTRY_VM1=host.docker.internal:5000/elif
+REGISTRY_VM2=host.docker.internal:5001/elif
+```
+
+These registry names are stable across home, university, and other network locations. They replace the older approach that used the MacBook LAN IP in image names.
+
+---
+
+## Stable Registry Design
+
+Each VM runs a local Docker registry on `127.0.0.1:5000` inside the VM.
+
+The MacBook reaches the registries through SSH tunnels:
+
+```text
+Mac 127.0.0.1:5000 -> VM-1 127.0.0.1:5000
+Mac 127.0.0.1:5001 -> VM-2 127.0.0.1:5000
+```
+
+Docker Desktop on macOS reaches the Mac host through `host.docker.internal`. Therefore, images are built and pushed using stable registry names:
+
+```text
+host.docker.internal:5000/elif/f1:latest
+host.docker.internal:5000/elif/f2:latest
+host.docker.internal:5000/elif/f3:latest
+
+host.docker.internal:5001/elif/f1:latest
+host.docker.internal:5001/elif/f2:latest
+host.docker.internal:5001/elif/f3:latest
+```
+
+This avoids changing registry names whenever the MacBook moves between different networks.
+
+The Kind containerd configuration maps these stable image names to the in-VM registry container:
+
+```text
+host.docker.internal:5000 -> registry:5000   on VM-1
+host.docker.internal:5001 -> registry:5000   on VM-2
+```
+
+Knative is also configured to skip tag-to-digest resolution for these local HTTP registry names.
+
+---
+
+## Required SSH Tunnels
+
+Open these two tunnels from the MacBook and keep both terminals running.
+
+### VM-1 tunnel
+
+```bash
+ssh -i ~/.ssh/chameleon_new -N \
+  -o ExitOnForwardFailure=yes \
+  -L 127.0.0.1:5000:127.0.0.1:5000 \
+  -L 127.0.0.1:6443:10.56.1.249:6443 \
+  cc@129.114.25.182
+```
+
+### VM-2 tunnel
+
+```bash
+ssh -i ~/.ssh/chameleon_new -N \
+  -o ExitOnForwardFailure=yes \
+  -L 127.0.0.1:5001:127.0.0.1:5000 \
+  -L 127.0.0.1:6444:10.56.2.149:6443 \
+  cc@129.114.25.80
+```
+
+Verify the Kubernetes API tunnels:
+
+```bash
+KUBECONFIG=~/.kube/vm1-config kubectl get nodes
+KUBECONFIG=~/.kube/vm2-config kubectl get nodes
+```
+
+Verify the registry tunnels from the Mac host:
+
+```bash
+curl http://127.0.0.1:5000/v2/_catalog
+curl http://127.0.0.1:5001/v2/_catalog
+```
+
+Verify the registry tunnels from Docker Desktop:
+
+```bash
+docker run --rm curlimages/curl:8.9.1 \
+  http://host.docker.internal:5000/v2/_catalog
+
+docker run --rm curlimages/curl:8.9.1 \
+  http://host.docker.internal:5001/v2/_catalog
+```
+
+The Makefile provides the same checks:
+
+```bash
+make test-registries
 ```
 
 ---
 
-## Step 2 — Install Dependencies (both VMs)
+## Docker Desktop Insecure Registries
 
-```bash
-# Docker
-curl -fsSL https://get.docker.com | bash
-sudo usermod -aG docker $USER
-newgrp docker
+Docker Desktop must allow the two local HTTP registry names:
 
-# kubectl
-curl -LO "https://dl.k8s.io/release/$(curl -sL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-chmod +x kubectl && sudo mv kubectl /usr/local/bin/
-
-# Kind
-curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.24.0/kind-linux-amd64
-chmod +x kind && sudo mv kind /usr/local/bin/
-
-# Helm
-curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
-
-# subctl (Submariner CLI)
-curl -Ls https://get.submariner.io | bash
-export PATH=$PATH:~/.local/bin
-echo 'export PATH=$PATH:~/.local/bin' >> ~/.bashrc
+```json
+{
+  "insecure-registries": [
+    "host.docker.internal:5000",
+    "host.docker.internal:5001"
+  ]
+}
 ```
+
+Restart Docker Desktop after changing this setting.
 
 ---
 
-## Step 3 — Create Kind Clusters
+## Kind Containerd Registry Mapping
 
-### On edge-vm
+Run once on VM-1 unless the Kind cluster is recreated:
 
 ```bash
-cat > kind-edge.yaml << EOF
-kind: Cluster
-apiVersion: kind.x-k8s.io/v1alpha4
-networking:
-  podSubnet: "10.244.0.0/16"
-  serviceSubnet: "10.96.0.0/16"
-  apiServerAddress: "10.52.0.213"
-  apiServerPort: 6443
+docker exec vm1-cluster-control-plane mkdir -p \
+  /etc/containerd/certs.d/host.docker.internal:5000
+
+cat <<'EOF' | docker exec -i vm1-cluster-control-plane tee \
+  /etc/containerd/certs.d/host.docker.internal:5000/hosts.toml
+server = "http://host.docker.internal:5000"
+
+[host."http://registry:5000"]
+  capabilities = ["pull", "resolve"]
 EOF
 
-kind create cluster --name edge --config kind-edge.yaml
-kubectl cluster-info --context kind-edge
+docker exec vm1-cluster-control-plane systemctl restart containerd
 ```
 
-### On cloud-vm
+Run once on VM-2 unless the Kind cluster is recreated:
 
 ```bash
-cat > kind-cloud.yaml << EOF
-kind: Cluster
-apiVersion: kind.x-k8s.io/v1alpha4
-networking:
-  podSubnet: "10.245.0.0/16"
-  serviceSubnet: "10.97.0.0/16"
-  apiServerAddress: "10.52.2.163"
-  apiServerPort: 6443
+docker exec vm2-cluster-control-plane mkdir -p \
+  /etc/containerd/certs.d/host.docker.internal:5001
+
+cat <<'EOF' | docker exec -i vm2-cluster-control-plane tee \
+  /etc/containerd/certs.d/host.docker.internal:5001/hosts.toml
+server = "http://host.docker.internal:5001"
+
+[host."http://registry:5000"]
+  capabilities = ["pull", "resolve"]
 EOF
 
-kind create cluster --name cloud --config kind-cloud.yaml
-kubectl cluster-info --context kind-cloud
-```
-
-> **Important:** Pod and service CIDRs must not overlap between clusters.
-
----
-
-## Step 4 — Install Submariner
-
-### On cloud-vm — deploy the broker
-
-```bash
-subctl deploy-broker
-scp broker-info.subm cc@<edge-internal-ip>:~
-```
-
-### On cloud-vm — join
-
-```bash
-subctl join broker-info.subm \
-  --clusterid cloud \
-  --natt=true \
-  --cable-driver libreswan
-```
-
-### On edge-vm — join
-
-```bash
-subctl join broker-info.subm \
-  --clusterid edge \
-  --natt=true \
-  --cable-driver libreswan
-```
-
-### Verify
-
-```bash
-subctl show connections
-# Expected: STATUS = connected, RTT avg shown
+docker exec vm2-cluster-control-plane systemctl restart containerd
 ```
 
 ---
 
-## Step 5 — Install Knative Serving (both VMs)
+## Knative Registry Skip Configuration
+
+Run once per cluster unless the cluster is recreated.
+
+VM-1:
 
 ```bash
-kubectl apply -f https://github.com/knative/serving/releases/download/knative-v1.21.2/serving-crds.yaml
-kubectl apply -f https://github.com/knative/serving/releases/download/knative-v1.21.2/serving-core.yaml
-kubectl apply -f https://github.com/knative/net-kourier/releases/download/knative-v1.16.0/kourier.yaml
-
-kubectl patch configmap/config-network \
+KUBECONFIG=~/.kube/vm1-config kubectl patch configmap config-deployment \
   -n knative-serving \
   --type merge \
-  -p '{"data":{"ingress-class":"kourier.ingress.networking.knative.dev"}}'
+  -p '{"data":{"registries-skipping-tag-resolving":"host.docker.internal:5000,registry:5000,localhost:5000,127.0.0.1:5000"}}'
 
-kubectl get pods -n knative-serving
-kubectl get pods -n kourier-system
+KUBECONFIG=~/.kube/vm1-config kubectl rollout restart deployment controller -n knative-serving
+KUBECONFIG=~/.kube/vm1-config kubectl rollout status deployment controller -n knative-serving
+```
+
+VM-2:
+
+```bash
+KUBECONFIG=~/.kube/vm2-config kubectl patch configmap config-deployment \
+  -n knative-serving \
+  --type merge \
+  -p '{"data":{"registries-skipping-tag-resolving":"host.docker.internal:5001,registry:5000,localhost:5000,127.0.0.1:5001"}}'
+
+KUBECONFIG=~/.kube/vm2-config kubectl rollout restart deployment controller -n knative-serving
+KUBECONFIG=~/.kube/vm2-config kubectl rollout status deployment controller -n knative-serving
 ```
 
 ---
 
-## Step 6 — Install Prometheus + Grafana (both VMs)
+## Prometheus Access
+
+The controller runs on VM-1. Therefore, both Prometheus APIs must be reachable from VM-1.
+
+On VM-1 terminal 1:
 
 ```bash
-helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
-helm repo update
+KUBECONFIG=~/.kube/vm1-config kubectl -n monitoring port-forward \
+  svc/kube-prometheus-stack-prometheus 9091:9090
+```
 
-helm install prometheus prometheus-community/kube-prometheus-stack \
-  --namespace monitoring \
-  --create-namespace \
-  --set grafana.enabled=true \
-  --set alertmanager.enabled=false \
-  --set prometheus.prometheusSpec.resources.requests.memory=256Mi \
-  --set prometheus.prometheusSpec.resources.requests.cpu=100m
+On VM-1 terminal 2:
 
-kubectl get pods -n monitoring
+```bash
+KUBECONFIG=~/vm2-from-vm1-config kubectl -n monitoring port-forward \
+  svc/kube-prometheus-stack-prometheus 9092:9090
+```
+
+Verify from VM-1:
+
+```bash
+curl -s "http://127.0.0.1:9091/api/v1/query?query=up" | head
+curl -s "http://127.0.0.1:9092/api/v1/query?query=up" | head
+```
+
+The controller uses these endpoints:
+
+```text
+127.0.0.1:9091 -> VM-1 Prometheus
+127.0.0.1:9092 -> VM-2 Prometheus
+```
+
+If these port-forwards are not running, latency probing still works, but Prometheus infrastructure metrics may show `NA` or zero values.
+
+---
+
+## Controller Scripts
+
+The VM-1 controller is divided into four scripts.
+
+### `chain_controller.sh`
+
+Main orchestration script.
+
+Responsibilities:
+
+```text
+1. Read chain_intent.json
+2. Read application_descriptor.json
+3. Read controller_config.json
+4. Call collect_chain_metrics.sh
+5. Call decide_chain_placement.sh
+6. Call deploy_chain_selected.sh
+7. Print the selected chain URL
+```
+
+Control flow:
+
+```text
+chain_controller.sh
+  -> collect_chain_metrics.sh
+  -> decide_chain_placement.sh
+  -> deploy_chain_selected.sh
+```
+
+### `collect_chain_metrics.sh`
+
+Measurement script.
+
+Responsibilities:
+
+```text
+1. Read the intent and controller config
+2. Query Prometheus metrics from VM-1 and VM-2
+3. Actively probe the f1 public URL on VM-1 and VM-2
+4. Measure external HTTP latency
+5. Extract internal chain latency from the f1 response
+6. Ignore the first sample if configured
+7. Compute warm average latency values
+8. Write /tmp/chain_controller_metrics_summary.env
+```
+
+Prometheus is used for infrastructure metrics:
+
+```text
+CPU usage
+memory usage
+available replicas
+```
+
+Latency is currently measured by active probing. The response field `chain_duration_ms` is used as the internal chain latency.
+
+Example metric summary:
+
+```text
+VM1_WARM_INTERNAL=209.69
+VM2_WARM_INTERNAL=213.19
+VM1_WARM_EXTERNAL=218.24
+VM2_WARM_EXTERNAL=222.56
+VM1_WARM_VIOLATION_RATE=0.0
+VM2_WARM_VIOLATION_RATE=0.0
+```
+
+### `decide_chain_placement.sh`
+
+Decision script.
+
+Responsibilities:
+
+```text
+1. Read /tmp/chain_controller_metrics_summary.env
+2. Read the latency requirement from chain_intent.json
+3. Read the decision metric from controller_config.json
+4. Compare VM-1 and VM-2
+5. Select the VM with the lower selected metric value
+6. Check whether the selected value satisfies the intent
+7. Write /tmp/chain_decision.env
+```
+
+Example decision:
+
+```text
+SELECTED_VM=vm1
+SELECTED_VALUE=209.69
+INTENT_SATISFIED=true
+DECISION_METRIC=warm_internal_chain_latency
+SLA_MS=700
+```
+
+### `deploy_chain_selected.sh`
+
+Deployment script.
+
+Responsibilities:
+
+```text
+1. Receive selected VM as input
+2. Select the correct kubeconfig, registry, and floating IP
+3. Deploy f3, f2, and f1 as Knative Services
+4. Configure f1 to call f2 and f2 to call f3
+5. Wait until all Knative services are ready
+6. Write /tmp/selected_chain_url.txt
+```
+
+The active deployment script uses stable registry names:
+
+```bash
+REGISTRY_VM1="${REGISTRY_VM1:-host.docker.internal:5000/elif}"
+REGISTRY_VM2="${REGISTRY_VM2:-host.docker.internal:5001/elif}"
+```
+
+Example selected URL:
+
+```text
+http://f1.default.129.114.25.182.sslip.io
 ```
 
 ---
 
+## Function Chain
 
-## Stack Verification
+The application contains three functions:
 
-Run this on both VMs to confirm all layers:
+```text
+f1 -> f2 -> f3
+```
+
+The client invokes only `f1`.
+
+When the complete chain is deployed on one VM, internal Kubernetes DNS is used for inter-function communication:
+
+```text
+http://f2.default.svc.cluster.local
+http://f3.default.svc.cluster.local
+```
+
+The public entry URLs have the following form:
+
+```text
+VM-1: http://f1.default.129.114.25.182.sslip.io
+VM-2: http://f1.default.129.114.25.80.sslip.io
+```
+
+Example request payload:
+
+```json
+{
+  "work_ms": 50
+}
+```
+
+Example response:
+
+```json
+{
+  "function": "f1",
+  "message": "function chain completed",
+  "vm_floating_ip": "129.114.25.182",
+  "work_ms": 50,
+  "chain_duration_ms": 407.5,
+  "f2_response": {
+    "function": "f2",
+    "vm_floating_ip": "129.114.25.182",
+    "f3_response": {
+      "function": "f3",
+      "vm_floating_ip": "129.114.25.182"
+    }
+  }
+}
+```
+
+The `vm_floating_ip` fields confirm where the functions executed.
+
+---
+
+## Makefile
+
+The Makefile uses stable registry names:
+
+```makefile
+REGISTRY_VM1 ?= host.docker.internal:5000/elif
+REGISTRY_VM2 ?= host.docker.internal:5001/elif
+```
+
+Useful commands:
 
 ```bash
-echo "=== LAYER 1: DOCKER ===" && docker --version
-echo "=== LAYER 2: KIND IN DOCKER ===" && docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}"
-echo "=== LAYER 3: KUBERNETES ===" && kubectl get nodes -o wide
-echo "=== LAYER 4: KNATIVE ===" && kubectl get pods -n knative-serving
-echo "=== LAYER 5: FUNCTIONS ===" && kubectl get ksvc -A
+make check
+make show-tunnels
+make test-registries
+
+make build-push-vm1
+make build-push-vm2
+make build-push-all
+
+make deploy-vm1
+make deploy-vm2
+
+make deploy-vm1-existing
+make deploy-vm2-existing
+
+make invoke-vm1
+make invoke-vm2
+
+make clean-vm1
+make clean-vm2
 ```
 
-### Verified output — edge-vm
+---
 
-```
-LAYER 1: Docker version 28.2.2
-LAYER 2: edge-control-plane   kindest/node:v1.33.1   Up 3 weeks
-LAYER 3: edge-control-plane   Ready   control-plane   v1.33.1   172.19.0.2
-LAYER 4: activator, autoscaler, controller, net-kourier-controller, webhook — all 1/1 Running
-LAYER 5: hello-python True, hello-knative True
+## Running the Full Workflow
+
+From the local developer laptop:
+
+```bash
+cd ~/thesis/function-chain
+./scripts/run_chain_workflow.sh
 ```
 
-### Verified output — cloud-vm
+The workflow performs the following steps:
 
+```text
+1. Check Makefile configuration
+2. Test registry tunnels from the Mac host and Docker Desktop
+3. Create controller.env with stable registry names
+4. Build f1, f2, and f3 images for VM-1
+5. Push images to the VM-1 registry
+6. Build f1, f2, and f3 images for VM-2
+7. Push images to the VM-2 registry
+8. Copy chain_intent.json to VM-1
+9. Copy application_descriptor.json to VM-1
+10. Copy controller_config.json to VM-1
+11. Copy controller.env to VM-1
+12. Trigger the VM-1 controller through SSH
+13. Collect Prometheus metrics and active latency measurements
+14. Select the suitable VM
+15. Deploy the complete function chain to the selected VM
+16. Retrieve the selected f1 URL
+17. Invoke the selected chain from the local laptop
 ```
-LAYER 1: Docker version 28.2.2
-LAYER 2: cloud-control-plane   kindest/node:v1.35.1   Up 4 weeks
-LAYER 3: cloud-control-plane   Ready   control-plane   v1.35.1   172.18.0.2
-LAYER 4: activator, autoscaler, controller, net-kourier-controller, webhook — all 1/1 Running
-LAYER 5: hello-python True, hello-knative True, hello-from-edge True
+
+Expected controller output contains sections similar to:
+
+```text
+===== Collecting monitoring and latency metrics =====
+===== Deciding suitable VM for intent =====
+===== Deploying selected whole-chain placement =====
+===== Done =====
+```
+
+Example successful decision:
+
+```text
+Selected whole-chain placement: [vm1, vm1, vm1]
+Selected metric value: 209.69 ms
+Intent requirement: <= 700 ms
+Intent satisfied: true
+```
+
+---
+
+## Manual Invocation
+
+After deployment, the selected URL is stored on VM-1:
+
+```text
+/tmp/selected_chain_url.txt
+```
+
+Retrieve it from the MacBook:
+
+```bash
+SELECTED_URL=$(ssh -i ~/.ssh/chameleon_new cc@129.114.25.182 \
+  'cat /tmp/selected_chain_url.txt')
+echo "$SELECTED_URL"
+```
+
+Invoke the selected chain:
+
+```bash
+curl -s -X POST "$SELECTED_URL" \
+  -H "Content-Type: application/json" \
+  -d '{"work_ms":50}' | python3 -m json.tool
+```
+
+Direct invocation examples:
+
+```bash
+curl -s -X POST "http://f1.default.129.114.25.182.sslip.io" \
+  -H "Content-Type: application/json" \
+  -d '{"work_ms":50}' | python3 -m json.tool
+
+curl -s -X POST "http://f1.default.129.114.25.80.sslip.io" \
+  -H "Content-Type: application/json" \
+  -d '{"work_ms":50}' | python3 -m json.tool
+```
+
+---
+
+## Checking Controller Cleanliness
+
+The active VM-1 controller scripts should be:
+
+```text
+chain_controller.sh
+collect_chain_metrics.sh
+decide_chain_placement.sh
+deploy_chain_selected.sh
+```
+
+Check that there is no old LAN-IP or MAC-IP logic:
+
+```bash
+cd ~/chain-controller
+
+grep -RInE 'LAN_IP|MAC_IP|ipconfig|getifaddr|192\.168\.|143\.205\.|NEW_IP|\$\{MAC_IP\}|\$MAC_IP' . \
+  --exclude='*.bak*'
+```
+
+Expected result:
+
+```text
+no output
+```
+
+---
+
+## When the Mac Network Changes
+
+No image registry changes are required.
+
+The current setup uses stable registry names:
+
+```text
+host.docker.internal:5000/elif
+host.docker.internal:5001/elif
+```
+
+Therefore, switching between home, university, or another Wi-Fi network does not require changing Docker registry names, containerd registry mappings, or Knative registry skip lists.
+
+The only requirement is to reopen the SSH tunnels:
+
+```bash
+ssh -i ~/.ssh/chameleon_new -N \
+  -o ExitOnForwardFailure=yes \
+  -L 127.0.0.1:5000:127.0.0.1:5000 \
+  -L 127.0.0.1:6443:10.56.1.249:6443 \
+  cc@129.114.25.182
+```
+
+```bash
+ssh -i ~/.ssh/chameleon_new -N \
+  -o ExitOnForwardFailure=yes \
+  -L 127.0.0.1:5001:127.0.0.1:5000 \
+  -L 127.0.0.1:6444:10.56.2.149:6443 \
+  cc@129.114.25.80
 ```
 
 ---
 
 ## Troubleshooting
 
-### Submariner connected but traffic fails
+| Problem                                        | Likely Cause                                                                    | Fix                                                                                     |
+| ---------------------------------------------- | ------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `kubectl connection refused`                   | Kubernetes API SSH tunnel is closed                                             | Reopen the Kubernetes API tunnel                                                        |
+| Docker push fails                              | Registry tunnel is closed or Docker Desktop cannot reach `host.docker.internal` | Run `make test-registries` and reopen tunnels                                           |
+| `ImagePullBackOff`                             | Kind/containerd cannot map the stable registry name to `registry:5000`          | Check `/etc/containerd/certs.d/host.docker.internal:<port>/hosts.toml` in the Kind node |
+| `RevisionFailed: Unable to fetch image`        | Knative tried HTTPS tag resolution on the HTTP registry                         | Patch `registries-skipping-tag-resolving` and restart the Knative controller            |
+| `kn: command not found` on VM-1                | Knative CLI is missing on VM-1                                                  | Install `kn` on VM-1 or add it to PATH                                                  |
+| Function runs on wrong VM                      | Wrong kubeconfig or registry selected                                           | Check `deploy_chain_selected.sh`, selected VM, and `controller.env`                     |
+| First latency sample is very high              | Cold start or scale-from-zero                                                   | Use `ignore_first_sample=true`                                                          |
+| Prometheus values show zero before probing     | Services may be scaled to zero or not scraped yet                               | Check after probing or verify Prometheus port-forward                                   |
+| Prometheus values show `NA`                    | Prometheus port-forward is not running on VM-1                                  | Start port-forwards for `9091` and `9092`                                               |
+| Final invocation differs from decision latency | New revision warm-up or transient network overhead                              | Repeat invocation or inspect warm samples                                               |
 
-```bash
-# Disable health check (NET_RAW not available in Kind)
-kubectl patch submariner submariner \
-  -n submariner-operator \
-  --type=merge \
-  -p '{"spec":{"connectionHealthCheck":{"enabled":false}}}'
+---
 
-kubectl rollout restart daemonset/submariner-gateway -n submariner-operator
-subctl show connections
+## Current Scope
+
+Implemented:
+
+```text
+Two edge clusters
+Three-function serverless chain
+Low-latency intent
+Separated intent, application descriptor, and controller config
+Stable registry naming independent of Mac LAN IP
+Prometheus infrastructure monitoring
+Active latency probing
+Warm latency decision metric
+Whole-chain placement
+Knative deployment
+Local laptop invocation
 ```
 
-### DNS resolves but connection refused
+Not yet implemented:
 
-```bash
-kubectl annotate serviceimport <service-name> \
-  lighthouse.submariner.io/use-clusterset-ip=true \
-  --overwrite -n default
-```
-
-### Docker image exec format error
-
-```bash
-# Rebuild for correct architecture
-docker buildx build --platform linux/amd64 \
-  -t <your-image>:v2 --push .
-```
-
-### Kourier 404 on install
-
-```bash
-# Use v1.16.0 with Knative v1.21
-kubectl apply -f https://github.com/knative/net-kourier/releases/download/knative-v1.16.0/kourier.yaml
-```
-
-### Cross-cluster VXLAN RX always 0
-
-```bash
-# Re-join with libreswan instead of vxlan
-subctl join broker-info.subm \
-  --clusterid <id> --natt=true --cable-driver libreswan
+```text
+Automatic per-function split placement
+Continuous closed-loop re-optimization
+Prometheus-native application latency metrics
+Reinforcement-learning scheduler
+Multi-application orchestration
 ```
 
 ---
 
-## Verification Checklist
+## Notes
 
-```bash
-kubectl get nodes                    # Ready
-subctl show connections              # connected
-kubectl get pods -n knative-serving  # all Running
-kubectl get pods -n monitoring       # all Running
-kubectl get ksvc -A                  # READY: True
-subctl show all                      # full status
-```
+This repository contains a master's thesis research prototype. Some values such as VM public IPs and private Kind API addresses are environment-specific.
+
+Do not commit private SSH keys, kubeconfig files, Chameleon credentials, or other secrets to the repository.
 
 ---
 
 ## References
 
-- [Chameleon Cloud](https://chameleoncloud.org)
-- [Kind](https://kind.sigs.k8s.io)
-- [Submariner](https://submariner.io)
-- [Knative](https://knative.dev)
-- [Prometheus](https://prometheus.io)
-- Filinis et al. (2024) — Intent-driven orchestration of serverless applications in the computing continuum. *Future Generation Computer Systems*, 154, 72–86.
+* Chameleon Cloud: https://chameleoncloud.org
+* Kind: https://kind.sigs.k8s.io
+* Knative Serving: https://knative.dev/docs/serving/
+* Kourier: https://github.com/knative-extensions/net-kourier
+* Prometheus: https://prometheus.io
+* Filinis et al. (2024). *Intent-driven orchestration of serverless applications in the computing continuum.* Future Generation Computer Systems, 154, 72–86.

@@ -1,0 +1,18 @@
+# $schema: https://raw.githubusercontent.com/knative/func/3804dc9b/schema/func_yaml-schema.json
+# yaml-language-server: $schema=https://raw.githubusercontent.com/knative/func/3804dc9b/schema/func_yaml-schema.json
+specVersion: 0.36.0
+name: hello
+runtime: python
+registry: host.docker.internal:5000/elif
+image: host.docker.internal:5000/elif/hello:latest
+namespace: default
+created: 2026-05-15T10:33:14.621114+02:00
+build:
+  builder: s2i
+run:
+  envs:
+  - name: VM_FLOATING_IP
+    value: 129.114.25.182
+deploy:
+  namespace: default
+  image: host.docker.internal:5000/elif/hello:latest

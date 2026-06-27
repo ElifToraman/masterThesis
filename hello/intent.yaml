@@ -1,0 +1,6 @@
+function_name: hello
+objective: low_resource_usage
+metric: cpu
+policy: choose_lower_cpu
+max_cpu_cores: 1.0
+deploy_mode: existing

@@ -1,0 +1,176 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SAMPLES="${1:-10}"
+WORK_MS="${2:-50}"
+SLA_MS="${3:-700}"
+
+VM1_PUBLIC_IP="129.114.25.182"
+SSH_KEY="$HOME/.ssh/chameleon_new"
+
+KUBECONFIG_VM1="$HOME/.kube/vm1-config"
+KUBECONFIG_VM2="$HOME/.kube/vm2-config"
+
+TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
+RESULT_DIR="results"
+RESULT_FILE="${RESULT_DIR}/scheduling_experiment_${TIMESTAMP}.csv"
+
+mkdir -p "$RESULT_DIR"
+
+LAN_IP="$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null)"
+
+if [ -z "$LAN_IP" ]; then
+  echo "Could not detect Mac LAN IP"
+  exit 1
+fi
+
+echo "policy,placement,sample,external_latency_ms,internal_chain_duration_ms,sla_violation,entry_url" > "$RESULT_FILE"
+
+get_url() {
+  local kubeconfig="$1"
+  KUBECONFIG="$kubeconfig" kubectl get ksvc f1 -o jsonpath='{.status.url}'
+}
+
+measure_policy() {
+  local policy="$1"
+  local placement="$2"
+  local url="$3"
+
+  echo
+  echo "===== Measuring policy: $policy ====="
+  echo "Placement: $placement"
+  echo "URL: $url"
+
+  for i in $(seq 1 "$SAMPLES"); do
+    tmp_body="$(mktemp)"
+
+    external_seconds="$(
+      curl -s \
+        -o "$tmp_body" \
+        -w "%{time_total}" \
+        -X POST "$url" \
+        -H "Content-Type: application/json" \
+        -d "{\"work_ms\":${WORK_MS}}"
+    )"
+
+    external_ms="$(python3 - <<PY
+print(round(float("${external_seconds}") * 1000, 2))
+PY
+)"
+
+    internal_ms="$(python3 - "$tmp_body" <<'PY'
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        data = json.load(f)
+    print(data.get("chain_duration_ms", "NA"))
+except Exception:
+    print("NA")
+PY
+)"
+
+    violation="$(python3 - <<PY
+external_ms = float("${external_ms}")
+sla_ms = float("${SLA_MS}")
+print("true" if external_ms > sla_ms else "false")
+PY
+)"
+
+    echo "$policy,$placement,$i,$external_ms,$internal_ms,$violation,$url" | tee -a "$RESULT_FILE"
+
+    rm -f "$tmp_body"
+  done
+}
+
+print_summary() {
+  echo
+  echo "===== Experiment Summary ====="
+
+  python3 - "$RESULT_FILE" <<'PY'
+import csv
+import sys
+from statistics import mean
+
+path = sys.argv[1]
+rows = list(csv.DictReader(open(path)))
+
+policies = []
+for r in rows:
+    if r["policy"] not in policies:
+        policies.append(r["policy"])
+
+for policy in policies:
+    subset = [r for r in rows if r["policy"] == policy]
+    warm = [r for r in subset if int(r["sample"]) > 1]
+
+    def f(x):
+        return float(x)
+
+    ext = [f(r["external_latency_ms"]) for r in subset]
+    warm_ext = [f(r["external_latency_ms"]) for r in warm]
+
+    internal = [f(r["internal_chain_duration_ms"]) for r in subset if r["internal_chain_duration_ms"] != "NA"]
+    warm_internal = [f(r["internal_chain_duration_ms"]) for r in warm if r["internal_chain_duration_ms"] != "NA"]
+
+    violations = [r["sla_violation"] == "true" for r in subset]
+    warm_violations = [r["sla_violation"] == "true" for r in warm]
+
+    print(policy)
+    print(f"  placement: {subset[0]['placement']}")
+    print(f"  avg external latency:       {round(mean(ext), 2)} ms")
+    print(f"  warm avg external latency:  {round(mean(warm_ext), 2)} ms")
+    print(f"  avg internal chain latency: {round(mean(internal), 2)} ms")
+    print(f"  warm avg internal chain:    {round(mean(warm_internal), 2)} ms")
+    print(f"  violation rate:             {round(sum(violations)/len(violations)*100, 2)}%")
+    print(f"  warm violation rate:        {round(sum(warm_violations)/len(warm_violations)*100, 2)}%")
+    print()
+PY
+
+  echo "Raw results saved to: $RESULT_FILE"
+}
+
+echo "===== Scheduling Experiment ====="
+echo "SAMPLES=$SAMPLES"
+echo "WORK_MS=$WORK_MS"
+echo "SLA_MS=$SLA_MS"
+echo "Using stable registry names: host.docker.internal:5000 and host.docker.internal:5001"
+echo
+
+echo "===== Step 0: Build and push latest images once ====="
+make build-push-all
+
+echo
+echo "===== Policy 1: Static VM-1 ====="
+./scripts/deploy_placement.sh vm1 vm1 vm1
+VM1_URL="$(cat /tmp/selected_chain_url.txt)"
+measure_policy "static_vm1" "vm1-vm1-vm1" "$VM1_URL"
+
+echo
+echo "===== Policy 2: Static VM-2 ====="
+./scripts/deploy_placement.sh vm2 vm2 vm2
+VM2_URL="$(cat /tmp/selected_chain_url.txt)"
+measure_policy "static_vm2" "vm2-vm2-vm2" "$VM2_URL"
+
+echo
+echo "===== Policy 3: Intent-selected whole-chain placement ====="
+
+echo "Preparing both all-chain placements so the controller can measure both VMs..."
+./scripts/deploy_both_all_chain_existing.sh
+
+cat > /tmp/chain_controller.env <<EOF
+REGISTRY_VM1=host.docker.internal:5000/elif
+REGISTRY_VM2=host.docker.internal:5001/elif
+EOF
+
+scp -i "$SSH_KEY" chain_intent.json "cc@${VM1_PUBLIC_IP}:~/chain-controller/chain_intent.json"
+scp -i "$SSH_KEY" /tmp/chain_controller.env "cc@${VM1_PUBLIC_IP}:~/chain-controller/controller.env"
+
+ssh -i "$SSH_KEY" "cc@${VM1_PUBLIC_IP}" \
+  'cd ~/chain-controller && ./scripts/chain_controller.sh'
+
+SELECTED_URL="$(ssh -i "$SSH_KEY" "cc@${VM1_PUBLIC_IP}" 'cat /tmp/selected_chain_url.txt')"
+SELECTED_VM="$(ssh -i "$SSH_KEY" "cc@${VM1_PUBLIC_IP}" 'cat /tmp/selected_chain_vm.txt')"
+
+measure_policy "intent_selected" "${SELECTED_VM}-${SELECTED_VM}-${SELECTED_VM}" "$SELECTED_URL"
+
+print_summary

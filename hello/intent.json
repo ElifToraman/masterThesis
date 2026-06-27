@@ -1,0 +1,9 @@
+{
+  "function_name": "hello",
+  "objective": "low_latency",
+  "requirements": {
+    "latency_ms": 700
+  },
+  "policy": "choose_lowest_latency",
+  "deploy_mode": "existing"
+}

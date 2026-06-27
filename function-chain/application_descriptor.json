@@ -1,0 +1,18 @@
+{
+  "application": "function-chain",
+  "entrypoint": "f1",
+  "functions": [
+    {
+      "name": "f1",
+      "next": "f2"
+    },
+    {
+      "name": "f2",
+      "next": "f3"
+    },
+    {
+      "name": "f3",
+      "next": null
+    }
+  ]
+}

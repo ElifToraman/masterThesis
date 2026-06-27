@@ -1,0 +1,34 @@
+{
+  "apiVersion": "intent.dsg/v1alpha1",
+  "kind": "Intent",
+  "metadata": {
+    "name": "function-chain-low-latency"
+  },
+  "spec": {
+    "targetRef": {
+      "kind": "ServerlessApplication",
+      "name": "function-chain"
+    },
+    "objectives": [
+      {
+        "name": "low-latency",
+        "metric": "chain_latency_ms",
+        "operator": "<=",
+        "value": 700,
+        "measuredBy": "controller/warm_internal_chain_latency"
+      }
+    ],
+    "properties": [
+      {
+        "name": "placement-scope",
+        "value": "edge"
+      }
+    ],
+    "constraints": [
+      {
+        "name": "placement-mode",
+        "value": "whole-chain"
+      }
+    ]
+  }
+}

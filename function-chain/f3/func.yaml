@@ -1,0 +1,9 @@
+# $schema: https://raw.githubusercontent.com/knative/func/3804dc9b/schema/func_yaml-schema.json
+# yaml-language-server: $schema=https://raw.githubusercontent.com/knative/func/3804dc9b/schema/func_yaml-schema.json
+specVersion: 0.36.0
+name: f3
+runtime: python
+registry: host.docker.internal:5001/elif
+created: 2026-06-06T15:09:41.737457+02:00
+build:
+  builder: s2i
