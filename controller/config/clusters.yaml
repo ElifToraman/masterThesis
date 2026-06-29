@@ -1,0 +1,69 @@
+version: 1
+
+controller:
+  query_timeout_seconds: 10
+  monitoring_interval_seconds: 15
+  deployment_timeout_seconds: 300
+
+clusters:
+  vm1-cluster:
+    display_name: VM-1 Edge Cluster
+    kubeconfig_context: vm1-cluster
+
+    infrastructure:
+      private_ip: 10.56.1.249
+      public_ip: 129.114.25.182
+      ssh_alias: vm1
+
+    prometheus:
+      url: http://127.0.0.1:19091
+
+    grafana:
+      local_port: 13001
+
+    knative:
+      domain: 129.114.25.182.sslip.io
+      ingress_url: http://129.114.25.182
+
+    registry:
+      access_method: ssh
+      ssh_alias: vm1
+      remote_url: http://127.0.0.1:5000
+      image_prefix: host.docker.internal:5000/elif
+
+    scheduling:
+      workload_label_key: workload
+      workload_label_value: serverless
+      cluster_label_key: cluster
+      cluster_label_value: vm1
+
+  vm2-cluster:
+    display_name: VM-2 Edge Cluster
+    kubeconfig_context: vm2-cluster
+
+    infrastructure:
+      private_ip: 10.56.2.149
+      public_ip: 129.114.25.80
+      ssh_alias: vm2
+
+    prometheus:
+      url: http://127.0.0.1:19092
+
+    grafana:
+      local_port: 13002
+
+    knative:
+      domain: 129.114.25.80.sslip.io
+      ingress_url: http://129.114.25.80
+
+    registry:
+      access_method: ssh
+      ssh_alias: vm2
+      remote_url: http://127.0.0.1:5000
+      image_prefix: host.docker.internal:5000/elif
+
+    scheduling:
+      workload_label_key: workload
+      workload_label_value: serverless
+      cluster_label_key: cluster
+      cluster_label_value: vm2

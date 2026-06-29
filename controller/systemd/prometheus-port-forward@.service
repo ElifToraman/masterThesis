@@ -1,0 +1,18 @@
+[Unit]
+Description=Prometheus port forward for %i
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=cc
+WorkingDirectory=/home/cc/masterThesis
+Environment=HOME=/home/cc
+Environment=KUBECONFIG=/home/cc/.kube/config
+EnvironmentFile=/home/cc/masterThesis/controller/config/prometheus-%i.env
+ExecStart=/home/cc/masterThesis/controller/scripts/prometheus-port-forward.sh ${CONTEXT} ${LOCAL_PORT} ${PROMETHEUS_SERVICE}
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
