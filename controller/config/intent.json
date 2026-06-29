@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "function": "hello-instrumented",
+  "objective": {
+    "metric": "response_time_p95_ms",
+    "operator": "<=",
+    "value": 150
+  },
+  "placement": {
+    "mode": "single-cluster"
+  }
+}
