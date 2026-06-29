@@ -12,7 +12,13 @@
     "warmup_requests": 5,
     "measured_requests": 30,
     "request_timeout_seconds": 10,
-    "inter_request_delay_ms": 50
+    "inter_request_delay_ms": 500,
+    "namespace": "benchmark",
+    "service_name": "hello-benchmark",
+    "metrics_pre_wait_seconds": 20,
+    "metrics_post_wait_seconds": 20,
+    "prometheus_step_seconds": 5,
+    "cleanup_after_run": true
   },
   "feasibility": {
     "minimum_available_cpu_millicores": 200,
