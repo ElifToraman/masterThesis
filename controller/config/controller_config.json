@@ -6,7 +6,7 @@
   ],
   "monitoring": {
     "query_timeout_seconds": 10,
-    "snapshot_maximum_age_seconds": 30
+    "snapshot_maximum_age_seconds": 120
   },
   "benchmarking": {
     "warmup_requests": 5,
@@ -36,5 +36,15 @@
     "directory": "controller/results",
     "write_json": true,
     "write_csv": true
+  },
+  "policy": {
+    "fallback_mode": "best-effort",
+    "minimum_benchmark_success_rate_percent": 100,
+    "tie_breakers": [
+      "objective_metric",
+      "average_cpu_millicores",
+      "average_memory_mb",
+      "candidate_order"
+    ]
   }
 }
