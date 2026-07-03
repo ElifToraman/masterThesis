@@ -1103,6 +1103,11 @@ def main() -> int:
                 namespace,
             )
 
+        deployment_started_at = utc_now(
+            milliseconds=True
+        )
+        deployment_started_perf = time.perf_counter()
+
         print(
             f"Creating {namespace} only on "
             f"{selected_cluster}..."
@@ -1158,6 +1163,19 @@ def main() -> int:
             selected_context,
             namespace,
             service_name,
+        )
+
+        deployment_ready_at = utc_now(
+            milliseconds=True
+        )
+
+        deployment_time_ms = round(
+            (
+                time.perf_counter()
+                - deployment_started_perf
+            )
+            * 1000,
+            3,
         )
 
         url = request_url(
@@ -1368,6 +1386,15 @@ def main() -> int:
                     service[
                         "latest_ready_revision"
                     ]
+                ),
+            },
+            "deployment_timing": {
+                "started_at": deployment_started_at,
+                "service_ready_at": deployment_ready_at,
+                "duration_ms": deployment_time_ms,
+                "scope": (
+                    "Namespace creation through "
+                    "Knative Service and pod readiness"
                 ),
             },
             "selection_evaluation": {

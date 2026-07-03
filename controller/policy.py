@@ -8,6 +8,7 @@ import math
 import shutil
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -1160,6 +1161,9 @@ def main() -> int:
                 "Generate a fresh snapshot."
             )
 
+        decision_started_at = utc_now()
+        decision_started_perf = time.perf_counter()
+
         decision = build_decision(
             decision_id=arguments.decision_id,
             infrastructure_config=(
@@ -1209,6 +1213,24 @@ def main() -> int:
                 monitoring_age_seconds
             ),
         )
+
+        decision_finished_at = utc_now()
+        decision["timing"] = {
+            "started_at": decision_started_at,
+            "finished_at": decision_finished_at,
+            "duration_ms": round(
+                (
+                    time.perf_counter()
+                    - decision_started_perf
+                )
+                * 1000,
+                3,
+            ),
+            "scope": (
+                "Candidate feasibility evaluation, "
+                "ranking and placement selection"
+            ),
+        }
 
     except PolicyError as exc:
         print(
