@@ -30,7 +30,14 @@
   },
   "deployment": {
     "timeout_seconds": 300,
-    "poll_interval_seconds": 2
+    "poll_interval_seconds": 2,
+    "namespace": "intent-runtime",
+    "service_name": "hello-selected",
+    "invocation_count": 3,
+    "inter_request_delay_ms": 200,
+    "request_timeout_seconds": 10,
+    "cleanup_non_selected_clusters": true,
+    "keep_after_execution": true
   },
   "results": {
     "directory": "controller/results",
