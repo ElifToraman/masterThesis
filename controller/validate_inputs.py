@@ -205,6 +205,130 @@ def validate_intent(
         )
 
 
+def is_high_level_intent(
+    intent: dict[str, Any],
+) -> bool:
+    return "function_name" in intent
+
+
+def validate_high_level_intent(
+    intent: dict[str, Any],
+    function_catalog: dict[str, Any],
+) -> None:
+    function_name = intent.get("function_name")
+
+    if not isinstance(function_name, str) or not function_name:
+        raise ValidationError(
+            "intent.function_name must be a non-empty string"
+        )
+
+    functions = function_catalog.get("functions")
+
+    if not isinstance(functions, dict):
+        raise ValidationError(
+            "function_catalog.functions must be an object"
+        )
+
+    function = functions.get(function_name)
+
+    if not isinstance(function, dict):
+        available = ", ".join(sorted(functions))
+
+        raise ValidationError(
+            f"Unknown function: {function_name}. "
+            f"Available functions: {available}"
+        )
+
+    if intent.get("objective") != "low_latency":
+        raise ValidationError(
+            "Only objective=low_latency is currently supported"
+        )
+
+    requirements = intent.get("requirements")
+
+    if not isinstance(requirements, dict):
+        raise ValidationError(
+            "intent.requirements must be an object"
+        )
+
+    latency_ms = requirements.get("latency_ms")
+
+    if (
+        not isinstance(latency_ms, (int, float))
+        or isinstance(latency_ms, bool)
+    ):
+        raise ValidationError(
+            "intent.requirements.latency_ms must be numeric"
+        )
+
+    if latency_ms <= 0:
+        raise ValidationError(
+            "intent.requirements.latency_ms must be greater than zero"
+        )
+
+    if intent.get("policy") != "choose_lowest_latency":
+        raise ValidationError(
+            "Only policy=choose_lowest_latency is currently supported"
+        )
+
+    if intent.get("deploy_mode") != "existing":
+        raise ValidationError(
+            "Only deploy_mode=existing is currently supported"
+        )
+
+    if function.get("image_mode") != "existing":
+        raise ValidationError(
+            f"Function {function_name} is not registered "
+            "as an existing image"
+        )
+
+    image = function.get("image")
+
+    if not isinstance(image, str) or not image:
+        raise ValidationError(
+            f"Function {function_name} has no valid image"
+        )
+
+    endpoint = function.get("endpoint", "/")
+
+    if not isinstance(endpoint, str) or not endpoint.startswith("/"):
+        raise ValidationError(
+            f"Function {function_name} has an invalid endpoint"
+        )
+
+    method = function.get("method", "GET")
+
+    if method not in {"GET", "POST"}:
+        raise ValidationError(
+            f"Function {function_name} has an unsupported method"
+        )
+
+    port = function.get("port", 8080)
+
+    if (
+        not isinstance(port, int)
+        or isinstance(port, bool)
+        or port <= 0
+    ):
+        raise ValidationError(
+            f"Function {function_name} has an invalid port"
+        )
+
+    response_contract = function.get(
+        "response_contract",
+        "basic_http",
+    )
+
+    if response_contract not in {
+        "basic_http",
+        "instrumented",
+    }:
+        raise ValidationError(
+            f"Function {function_name} has an unsupported "
+            "response contract"
+        )
+
+
 def validate_controller_config(
     controller_config: dict[str, Any],
     infrastructure: dict[str, Any],
@@ -301,6 +425,24 @@ def parse_arguments() -> argparse.Namespace:
         default=DEFAULT_CONFIG_DIR,
     )
 
+    parser.add_argument(
+        "--intent",
+        type=Path,
+        help=(
+            "Optional intent file. Supports the existing internal "
+            "format and the high-level user format."
+        ),
+    )
+
+    parser.add_argument(
+        "--function-catalog",
+        type=Path,
+        help=(
+            "Optional function catalog. Defaults to "
+            "<config-directory>/function_catalog.json."
+        ),
+    )
+
     return parser.parse_args()
 
 
@@ -312,16 +454,67 @@ def main() -> int:
         descriptor = load_json(
             config_dir / "function_descriptor.json"
         )
-        intent = load_json(config_dir / "intent.json")
+
+        intent_path = (
+            arguments.intent
+            if arguments.intent
+            else config_dir / "intent.json"
+        )
+
+        catalog_path = (
+            arguments.function_catalog
+            if arguments.function_catalog
+            else config_dir / "function_catalog.json"
+        )
+
+        intent = load_json(intent_path)
+
         controller_config = load_json(
             config_dir / "controller_config.json"
         )
+
         infrastructure = load_yaml(
             config_dir / "clusters.yaml"
         )
 
-        validate_function_descriptor(descriptor)
-        validate_intent(intent, descriptor)
+        if is_high_level_intent(intent):
+            function_catalog = load_json(catalog_path)
+
+            validate_high_level_intent(
+                intent,
+                function_catalog,
+            )
+
+            selected_function = function_catalog[
+                "functions"
+            ][intent["function_name"]]
+
+            validated_function_name = intent[
+                "function_name"
+            ]
+
+            validated_image = selected_function[
+                "image"
+            ]
+
+            validated_intent_summary = (
+                "low_latency: "
+                "response_time_p95_ms <= "
+                f"{intent['requirements']['latency_ms']} ms"
+            )
+        else:
+            validate_function_descriptor(descriptor)
+            validate_intent(intent, descriptor)
+
+            validated_function_name = descriptor["name"]
+            validated_image = descriptor["image"]
+
+            validated_intent_summary = (
+                f"{intent['objective']['metric']} "
+                f"{intent['objective']['operator']} "
+                f"{intent['objective']['value']}"
+            )
+
         validate_controller_config(
             controller_config,
             infrastructure,
@@ -332,14 +525,9 @@ def main() -> int:
         return 1
 
     print("Controller input validation passed.")
-    print(f"Function: {descriptor['name']}")
-    print(f"Image: {descriptor['image']}")
-    print(
-        "Intent: "
-        f"{intent['objective']['metric']} "
-        f"{intent['objective']['operator']} "
-        f"{intent['objective']['value']}"
-    )
+    print(f"Function: {validated_function_name}")
+    print(f"Image: {validated_image}")
+    print(f"Intent: {validated_intent_summary}")
     print(
         "Candidate clusters: "
         + ", ".join(

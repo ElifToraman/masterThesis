@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "functions": {
+    "hello": {
+      "image": "host.docker.internal:5000/elif/hello:latest",
+      "endpoint": "/",
+      "method": "GET",
+      "port": 8080,
+      "response_contract": "basic_http",
+      "image_mode": "existing",
+      "profile_mode": "profile_if_missing"
+    }
+  }
+}

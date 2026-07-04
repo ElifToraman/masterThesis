@@ -1,0 +1,14 @@
+
+# MacBook intent client local configuration and outputs
+intent-edge-client/config/client.env
+intent-edge-client/logs/*
+intent-edge-client/responses/*
+intent-edge-client/results/*
+intent-edge-client/submissions/*
+!intent-edge-client/logs/.gitkeep
+!intent-edge-client/responses/.gitkeep
+!intent-edge-client/results/.gitkeep
+!intent-edge-client/submissions/.gitkeep
+intent-edge-client/work/*
+!intent-edge-client/work/.gitkeep
+.venv/
