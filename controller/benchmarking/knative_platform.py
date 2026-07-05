@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+import json
 import subprocess
 
 from .models import BenchmarkRequest
 from .platform import FunctionPlatform
-
 
 class KnativePlatform(FunctionPlatform):
     def _run_kubectl(
@@ -76,12 +76,63 @@ class KnativePlatform(FunctionPlatform):
 
         return bool(result.stdout.strip())
 
+    def _create_service_manifest(
+        self,
+        request: BenchmarkRequest,
+    ) -> str:
+        manifest = {
+            "apiVersion": "serving.knative.dev/v1",
+            "kind": "Service",
+            "metadata": {
+                "name": request.benchmark_service_name,
+                "namespace": request.namespace,
+            },
+            "spec": {
+                "template": {
+                    "metadata": {
+                        "annotations": {
+                            "autoscaling.knative.dev/min-scale": "1",
+                            "autoscaling.knative.dev/max-scale": "1",
+                        },
+                    },
+                    "spec": {
+                        "containerConcurrency": 1,
+                        "containers": [
+                            {
+                                "image": request.image_reference,
+                            },
+                        ],
+                    },
+                },
+            },
+        }
+
+        return json.dumps(
+            manifest,
+            indent=2,
+        )
+
     def deploy_service(
         self,
         kubernetes_context: str,
         request: BenchmarkRequest,
     ) -> None:
-        raise NotImplementedError
+        manifest = self._create_service_manifest(
+            request
+        )
+
+        self._run_kubectl(
+            kubernetes_context=kubernetes_context,
+            arguments=[
+                "apply",
+                "-f",
+                "-",
+            ],
+            input_text=manifest,
+            timeout_seconds=(
+                request.deployment_timeout_seconds
+            ),
+        )
 
     def wait_until_ready(
         self,
