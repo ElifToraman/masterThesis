@@ -12,3 +12,5 @@ intent-edge-client/submissions/*
 intent-edge-client/work/*
 !intent-edge-client/work/.gitkeep
 .venv/
+controller/monitoring/plot/metric_graphs
+controller/monitoring/metrics
