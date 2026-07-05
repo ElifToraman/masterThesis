@@ -9,6 +9,9 @@ class BenchmarkRequest:
     benchmark_service_name: str
     namespace: str
     image_reference: str
+    minimum_scale: int = 1
+    maximum_scale: int = 1
+    container_concurrency: int = 1
 
     http_method: str = "GET"
     request_body: bytes | None = None

@@ -91,12 +91,16 @@ class KnativePlatform(FunctionPlatform):
                 "template": {
                     "metadata": {
                         "annotations": {
-                            "autoscaling.knative.dev/min-scale": "1",
-                            "autoscaling.knative.dev/max-scale": "1",
+                           "autoscaling.knative.dev/min-scale": str(
+                                request.minimum_scale
+                            ),
+                            "autoscaling.knative.dev/max-scale": str(
+                                request.maximum_scale
+                            ),
                         },
                     },
                     "spec": {
-                        "containerConcurrency": 1,
+                        "containerConcurrency": request.container_concurrency,
                         "containers": [
                             {
                                 "image": request.image_reference,
@@ -141,7 +145,18 @@ class KnativePlatform(FunctionPlatform):
         service_name: str,
         timeout_seconds: float,
     ) -> None:
-        raise NotImplementedError
+        self._run_kubectl(
+            kubernetes_context=kubernetes_context,
+            arguments=[
+                "wait",
+                "--for=condition=Ready",
+                f"ksvc/{service_name}",
+                "-n",
+                namespace,
+                f"--timeout={int(timeout_seconds)}s",
+            ],
+            timeout_seconds=timeout_seconds + 10,
+        )
 
     def get_service_url(
         self,
@@ -149,7 +164,27 @@ class KnativePlatform(FunctionPlatform):
         namespace: str,
         service_name: str,
     ) -> str:
-        raise NotImplementedError
+        result = self._run_kubectl(
+            kubernetes_context=kubernetes_context,
+            arguments=[
+                "get",
+                "ksvc",
+                service_name,
+                "-n",
+                namespace,
+                "-o",
+                "jsonpath={.status.url}",
+            ],
+        )
+
+        service_url = result.stdout.strip()
+
+        if not service_url:
+            raise RuntimeError(
+                f"Knative service {service_name!r} has no URL"
+            )
+
+        return service_url
 
     def delete_service(
         self,
@@ -157,4 +192,15 @@ class KnativePlatform(FunctionPlatform):
         namespace: str,
         service_name: str,
     ) -> None:
-        raise NotImplementedError
+        self._run_kubectl(
+            kubernetes_context=kubernetes_context,
+            arguments=[
+                "delete",
+                "ksvc",
+                service_name,
+                "-n",
+                namespace,
+                "--ignore-not-found=true",
+                "--wait=true",
+            ],
+        )
