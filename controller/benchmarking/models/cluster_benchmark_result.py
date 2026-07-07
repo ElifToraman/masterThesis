@@ -22,7 +22,7 @@ class ClusterBenchmarkResult:
     deployment_duration_ms: float
 
     first_invocation_latency_ms: float
-    first_invocation_status: int | None
+    first_invocation_status_code: int | None
 
     warm_latency_samples_ms: list[float]
 
