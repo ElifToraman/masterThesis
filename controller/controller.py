@@ -4,9 +4,9 @@ import threading
 import time
 from pathlib import Path
 
-from monitoring.models import VMConfig
-from monitoring.monitoring_service import MonitoringService
-from monitoring.vm import VM
+from .monitoring.models import VMConfig
+from .monitoring.monitoring_service import MonitoringService
+from .monitoring.vm import VM
 
 
 logging.basicConfig(
