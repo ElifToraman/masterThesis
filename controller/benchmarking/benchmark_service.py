@@ -112,6 +112,7 @@ class BenchmarkService:
                 function_name=request.function_name,
                 benchmark_service_name=service_name,
                 image_reference=request.image_reference,
+                function_version=request.function_version,
                 endpoint=endpoint,
                 deployment_duration_ms=round(
                     deployment_duration_ms,

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class BenchmarkRequest:
     function_name: str
+    function_version: str
     benchmark_service_name: str
     namespace: str
     image_reference: str

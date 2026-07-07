@@ -1,0 +1,27 @@
+apiVersion: intent.elif.dev/v1
+kind: IntentFunction
+
+metadata:
+  name: hello-intent-function
+
+spec:
+  function:
+    name: hello
+    namespace: default
+    serviceName: hello
+    version: hello-latest
+    runtime: knative
+    image: elif/hello:latest
+
+  intent:
+    targetRef:
+      kind: KnativeService
+      name: default/hello
+
+    objectives:
+      - name: hello-p95-latency
+        description: P95 warm latency must be less than or equal to 50 ms
+        operator: "<="
+        value: 50
+        unit: ms
+        measuredBy: benchmark/hello/p95_warm_latency_ms
