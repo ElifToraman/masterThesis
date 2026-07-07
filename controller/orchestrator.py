@@ -40,15 +40,6 @@ def main() -> None:
     )
 
     run_step(
-        "Remove old deployment from non-selected clusters",
-        [
-            sys.executable,
-            "-m",
-            "controller.scripts.cleanup_non_selected",
-        ],
-    )
-
-    run_step(
         "Deploy selected function",
         [
             sys.executable,
