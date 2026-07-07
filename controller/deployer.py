@@ -4,7 +4,6 @@ import json
 import subprocess
 import time
 from dataclasses import dataclass
-from pathlib import Path
 
 import yaml
 
@@ -77,15 +76,17 @@ class KnativeDeployer:
         registry = CLUSTER_IMAGE_REGISTRIES.get(cluster_name)
 
         if registry is None:
-            raise ValueError(f"No image registry configured for {cluster_name}")
+            raise ValueError(
+                f"No image registry configured for cluster {cluster_name!r}"
+            )
 
         image_without_registry = image
 
         if "/" in image:
-            parts = image.split("/", maxsplit=1)
+            first_part, remainder = image.split("/", maxsplit=1)
 
-            if "." in parts[0] or ":" in parts[0]:
-                image_without_registry = parts[1]
+            if "." in first_part or ":" in first_part:
+                image_without_registry = remainder
 
         return f"{registry}/{image_without_registry}"
 
@@ -95,13 +96,15 @@ class KnativeDeployer:
         submission: IntentFunction,
         image: str,
     ) -> dict:
+        properties = submission.intent.properties
+
+        min_scale = str(properties.get("minScale", 0))
+        max_scale = str(properties.get("maxScale", 10))
+        container_port = int(properties.get("containerPort", 8080))
+
         annotations = {
-            "autoscaling.knative.dev/min-scale": str(
-                submission.function.min_scale
-            ),
-            "autoscaling.knative.dev/max-scale": str(
-                submission.function.max_scale
-            ),
+            "autoscaling.knative.dev/min-scale": min_scale,
+            "autoscaling.knative.dev/max-scale": max_scale,
         }
 
         return {
@@ -122,13 +125,13 @@ class KnativeDeployer:
                                 "image": image,
                                 "ports": [
                                     {
-                                        "containerPort": submission.function.port,
+                                        "containerPort": container_port,
                                     }
                                 ],
                             }
-                        ]
+                        ],
                     },
-                }
+                },
             },
         }
 
@@ -138,7 +141,10 @@ class KnativeDeployer:
         cluster_name: str,
         manifest: dict,
     ) -> None:
-        manifest_yaml = yaml.safe_dump(manifest, sort_keys=False)
+        manifest_yaml = yaml.safe_dump(
+            manifest,
+            sort_keys=False,
+        )
 
         result = subprocess.run(
             [
@@ -207,8 +213,8 @@ class KnativeDeployer:
             time.sleep(2)
 
         raise TimeoutError(
-            f"Knative Service {service_name} did not become Ready "
-            f"on {cluster_name} within {timeout_seconds} seconds."
+            f"Knative Service {service_name!r} did not become Ready "
+            f"on {cluster_name!r} within {timeout_seconds} seconds."
         )
 
     def _get_url(
