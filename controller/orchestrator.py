@@ -57,6 +57,15 @@ def main() -> None:
         ],
     )
 
+    run_step(
+        "Remove old deployment from non-selected clusters",
+        [
+            sys.executable,
+            "-m",
+            "controller.scripts.cleanup_non_selected",
+        ],
+    )
+
 
 if __name__ == "__main__":
     main()
