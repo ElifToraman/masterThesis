@@ -21,6 +21,9 @@ from controller.intent_function_parser import (
     parse_intent_function_payload,
 )
 
+from controller.benchmarking.benchmark_resource_sampler import (
+    BenchmarkResourceSampler,
+)
 
 CLUSTERS = {
     "vm1-cluster": "vm1-cluster",
