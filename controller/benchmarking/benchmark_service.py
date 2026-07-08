@@ -80,6 +80,7 @@ class BenchmarkService:
                     request=request,
                 )
 
+            time.sleep(20)
             warm_samples: list[float] = []
             successful_requests = 0
             failed_requests = 0

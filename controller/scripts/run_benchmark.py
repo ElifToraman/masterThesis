@@ -111,7 +111,7 @@ def main() -> None:
             image_reference=image_reference,
             http_method="GET",
             warmup_requests=3,
-            measured_requests=20,
+            measured_requests=50,
             request_timeout_seconds=10,
             deployment_timeout_seconds=180,
         )
