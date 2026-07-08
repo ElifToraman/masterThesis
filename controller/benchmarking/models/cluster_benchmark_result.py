@@ -29,6 +29,11 @@ class ClusterBenchmarkResult:
     successful_requests: int
     failed_requests: int
 
+    average_cpu_usage_cores: float | None = None
+    peak_cpu_usage_cores: float | None = None
+    average_memory_usage_bytes: int | None = None
+    peak_memory_usage_bytes: int | None = None
+
     @property
     def total_requests(self) -> int:
         return (

@@ -47,6 +47,7 @@ def main() -> None:
 
     service = BenchmarkService(
         platform=KnativePlatform(),
+        resource_sampler=BenchmarkResourceSampler(vms_by_cluster),
     )
 
     repository = BenchmarkRepository(

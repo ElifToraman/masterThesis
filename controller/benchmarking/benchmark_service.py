@@ -1,5 +1,3 @@
-# controller/benchmarking/benchmark_service.py
-
 from __future__ import annotations
 
 import time
@@ -7,6 +5,10 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 
+from .benchmark_resource_sampler import (
+    BenchmarkResourceSample,
+    BenchmarkResourceSampler,
+)
 from .models import (
     BenchmarkRequest,
     ClusterBenchmarkResult,
@@ -18,8 +20,10 @@ class BenchmarkService:
     def __init__(
         self,
         platform: FunctionPlatform,
+        resource_sampler: BenchmarkResourceSampler | None = None,
     ) -> None:
         self._platform = platform
+        self._resource_sampler = resource_sampler
 
     def benchmark_cluster(
         self,
@@ -52,9 +56,7 @@ class BenchmarkService:
                 kubernetes_context=kubernetes_context,
                 namespace=request.namespace,
                 service_name=service_name,
-                timeout_seconds=(
-                    request.deployment_timeout_seconds
-                ),
+                timeout_seconds=request.deployment_timeout_seconds,
             )
 
             deployment_duration_ms = (
@@ -67,10 +69,7 @@ class BenchmarkService:
                 service_name=service_name,
             )
 
-            (
-                first_latency_ms,
-                first_status_code,
-            ) = self._invoke(
+            first_latency_ms, first_status_code = self._invoke(
                 endpoint=endpoint,
                 request=request,
             )
@@ -84,6 +83,7 @@ class BenchmarkService:
             warm_samples: list[float] = []
             successful_requests = 0
             failed_requests = 0
+            resource_samples: list[BenchmarkResourceSample] = []
 
             for _ in range(request.measured_requests):
                 try:
@@ -98,12 +98,29 @@ class BenchmarkService:
                     else:
                         failed_requests += 1
 
+                    if self._resource_sampler is not None:
+                        sample = self._resource_sampler.sample(
+                            cluster_name=cluster_name,
+                            namespace=request.namespace,
+                            benchmark_service_name=service_name,
+                        )
+
+                        if sample is not None:
+                            resource_samples.append(sample)
+
                 except (
                     TimeoutError,
                     urllib.error.URLError,
                     RuntimeError,
                 ):
                     failed_requests += 1
+
+            resource_summary = None
+
+            if self._resource_sampler is not None:
+                resource_summary = self._resource_sampler.summarize(
+                    resource_samples
+                )
 
             return ClusterBenchmarkResult(
                 timestamp=datetime.now(timezone.utc),
@@ -122,14 +139,30 @@ class BenchmarkService:
                     first_latency_ms,
                     3,
                 ),
-                first_invocation_status_code=(
-                    first_status_code
-                ),
-                warm_latency_samples_ms=tuple(
-                    warm_samples
-                ),
+                first_invocation_status_code=first_status_code,
+                warm_latency_samples_ms=tuple(warm_samples),
                 successful_requests=successful_requests,
                 failed_requests=failed_requests,
+                average_cpu_usage_cores=(
+                    resource_summary.average_cpu_usage_cores
+                    if resource_summary is not None
+                    else None
+                ),
+                peak_cpu_usage_cores=(
+                    resource_summary.peak_cpu_usage_cores
+                    if resource_summary is not None
+                    else None
+                ),
+                average_memory_usage_bytes=(
+                    resource_summary.average_memory_usage_bytes
+                    if resource_summary is not None
+                    else None
+                ),
+                peak_memory_usage_bytes=(
+                    resource_summary.peak_memory_usage_bytes
+                    if resource_summary is not None
+                    else None
+                ),
             )
 
         finally:
