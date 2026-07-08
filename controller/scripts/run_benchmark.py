@@ -5,6 +5,9 @@ from pathlib import Path
 from controller.benchmarking.benchmark_repository import (
     BenchmarkRepository,
 )
+from controller.benchmarking.benchmark_resource_sampler import (
+    BenchmarkResourceSampler,
+)
 from controller.benchmarking.benchmark_service import (
     BenchmarkService,
 )
@@ -20,15 +23,37 @@ from controller.image_resolver import (
 from controller.intent_function_parser import (
     parse_intent_function_payload,
 )
+from controller.monitoring.models import VMConfig
+from controller.monitoring.vm import VM
 
-from controller.benchmarking.benchmark_resource_sampler import (
-    BenchmarkResourceSampler,
-)
 
 CLUSTERS = {
     "vm1-cluster": "vm1-cluster",
     "vm2-cluster": "vm2-cluster",
 }
+
+
+def create_vms() -> dict[str, VM]:
+    return {
+        "vm1-cluster": VM(
+            VMConfig(
+                name="vm1-cluster",
+                host="129.114.25.182",
+                ssh_user="cc",
+                ssh_key=Path.home() / ".ssh" / "chameleon_new",
+                prometheus_url="http://127.0.0.1:19091",
+            )
+        ),
+        "vm2-cluster": VM(
+            VMConfig(
+                name="vm2-cluster",
+                host="129.114.25.80",
+                ssh_user="cc",
+                ssh_key=Path.home() / ".ssh" / "chameleon_new",
+                prometheus_url="http://127.0.0.1:19092",
+            )
+        ),
+    }
 
 
 def main() -> None:
@@ -47,6 +72,8 @@ def main() -> None:
             encoding="utf-8",
         )
     )
+
+    vms_by_cluster = create_vms()
 
     service = BenchmarkService(
         platform=KnativePlatform(),
@@ -104,6 +131,10 @@ def main() -> None:
             f"warm_avg={result.average_warm_latency_ms:.2f} ms",
             f"warm_p95={result.p95_warm_latency_ms:.2f} ms",
             f"success={result.success_rate:.2%}",
+            f"cpu_avg={result.average_cpu_usage_cores}",
+            f"cpu_peak={result.peak_cpu_usage_cores}",
+            f"mem_avg={result.average_memory_usage_bytes}",
+            f"mem_peak={result.peak_memory_usage_bytes}",
         )
 
 
