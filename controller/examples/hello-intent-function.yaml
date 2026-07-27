@@ -9,9 +9,9 @@ spec:
     name: hello
     namespace: default
     serviceName: hello
-    version: hello-latest
+    version: hello-v2
     runtime: knative
-    image: elif/hello:latest
+    image: elif/hello:v2
 
   intent:
     targetRef:

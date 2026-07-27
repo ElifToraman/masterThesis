@@ -126,9 +126,37 @@ def parse_intent_function_payload(
             )
         )
 
+    constraints_payload = _require_list(
+        intent_payload.get("constraints", []),
+        "spec.intent.constraints",
+    )
+    constraints: list[Objective] = []
+
+    for index, item in enumerate(constraints_payload):
+        constraint_payload = _require_mapping(
+            item,
+            f"spec.intent.constraints[{index}]",
+        )
+        constraints.append(
+            Objective(
+                name=str(constraint_payload["name"]),
+                description=constraint_payload.get("description"),
+                operator=str(constraint_payload["operator"]),
+                value=float(constraint_payload["value"]),
+                unit=constraint_payload.get("unit"),
+                measured_by=str(
+                    constraint_payload["measuredBy"]
+                ),
+                weight=float(
+                    constraint_payload.get("weight", 1.0)
+                ),
+            )
+        )
+
     intent = Intent(
         target_ref=target_ref,
         objectives=objectives,
+        constraints=constraints,
         properties=dict(intent_payload.get("properties", {})),
     )
 

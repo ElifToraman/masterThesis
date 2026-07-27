@@ -1,0 +1,17 @@
+{
+  "minimumBenchmarkSuccessRate": 0.95,
+  "maximumBenchmarkAgeSeconds": 300,
+  "defaultRequiredCpuCores": 0.25,
+  "defaultRequiredMemoryMiB": 128,
+  "cpuSafetyFactor": 1.25,
+  "memorySafetyFactor": 1.25,
+  "coldStartReferenceMs": 1000,
+  "deploymentReferenceMs": 60000,
+  "scoringWeights": {
+    "objectives": 0.60,
+    "load": 0.15,
+    "cold_start": 0.10,
+    "deployment": 0.05,
+    "headroom": 0.10
+  }
+}

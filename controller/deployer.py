@@ -7,13 +7,9 @@ from dataclasses import dataclass
 
 import yaml
 
+from controller.image_resolver import resolve_image_for_registry
 from controller.models import IntentFunction
-
-
-CLUSTER_IMAGE_REGISTRIES = {
-    "vm1-cluster": "host.docker.internal:5000",
-    "vm2-cluster": "host.docker.internal:5001",
-}
+from controller.runtime_config import ClusterRuntimeConfig
 
 
 @dataclass(frozen=True)
@@ -26,15 +22,28 @@ class DeploymentResult:
 
 
 class KnativeDeployer:
+    def __init__(
+        self,
+        clusters: dict[str, ClusterRuntimeConfig],
+    ) -> None:
+        self._clusters = clusters
+
     def deploy(
         self,
         *,
         cluster_name: str,
         submission: IntentFunction,
     ) -> DeploymentResult:
-        image = self._image_for_cluster(
-            cluster_name=cluster_name,
+        cluster = self._clusters.get(cluster_name)
+
+        if cluster is None:
+            raise ValueError(
+                f"Unknown cluster {cluster_name!r}"
+            )
+
+        image = resolve_image_for_registry(
             image=submission.function.image,
+            registry=cluster.image_registry,
         )
 
         manifest = self._build_ksvc_manifest(
@@ -43,18 +52,18 @@ class KnativeDeployer:
         )
 
         self._kubectl_apply(
-            cluster_name=cluster_name,
+            kubernetes_context=cluster.kubernetes_context,
             manifest=manifest,
         )
 
         self._wait_until_ready(
-            cluster_name=cluster_name,
+            kubernetes_context=cluster.kubernetes_context,
             service_name=submission.function.service_name,
             namespace=submission.function.namespace,
         )
 
         url = self._get_url(
-            cluster_name=cluster_name,
+            kubernetes_context=cluster.kubernetes_context,
             service_name=submission.function.service_name,
             namespace=submission.function.namespace,
         )
@@ -66,29 +75,6 @@ class KnativeDeployer:
             image=image,
             url=url,
         )
-
-    def _image_for_cluster(
-        self,
-        *,
-        cluster_name: str,
-        image: str,
-    ) -> str:
-        registry = CLUSTER_IMAGE_REGISTRIES.get(cluster_name)
-
-        if registry is None:
-            raise ValueError(
-                f"No image registry configured for cluster {cluster_name!r}"
-            )
-
-        image_without_registry = image
-
-        if "/" in image:
-            first_part, remainder = image.split("/", maxsplit=1)
-
-            if "." in first_part or ":" in first_part:
-                image_without_registry = remainder
-
-        return f"{registry}/{image_without_registry}"
 
     def _build_ksvc_manifest(
         self,
@@ -138,7 +124,7 @@ class KnativeDeployer:
     def _kubectl_apply(
         self,
         *,
-        cluster_name: str,
+        kubernetes_context: str,
         manifest: dict,
     ) -> None:
         manifest_yaml = yaml.safe_dump(
@@ -150,7 +136,7 @@ class KnativeDeployer:
             [
                 "kubectl",
                 "--context",
-                cluster_name,
+                kubernetes_context,
                 "apply",
                 "-f",
                 "-",
@@ -173,7 +159,7 @@ class KnativeDeployer:
     def _wait_until_ready(
         self,
         *,
-        cluster_name: str,
+        kubernetes_context: str,
         service_name: str,
         namespace: str,
         timeout_seconds: int = 120,
@@ -185,7 +171,7 @@ class KnativeDeployer:
                 [
                     "kubectl",
                     "--context",
-                    cluster_name,
+                    kubernetes_context,
                     "get",
                     "ksvc",
                     service_name,
@@ -214,13 +200,14 @@ class KnativeDeployer:
 
         raise TimeoutError(
             f"Knative Service {service_name!r} did not become Ready "
-            f"on {cluster_name!r} within {timeout_seconds} seconds."
+            f"on {kubernetes_context!r} within "
+            f"{timeout_seconds} seconds."
         )
 
     def _get_url(
         self,
         *,
-        cluster_name: str,
+        kubernetes_context: str,
         service_name: str,
         namespace: str,
     ) -> str:
@@ -228,7 +215,7 @@ class KnativeDeployer:
             [
                 "kubectl",
                 "--context",
-                cluster_name,
+                kubernetes_context,
                 "get",
                 "ksvc",
                 service_name,

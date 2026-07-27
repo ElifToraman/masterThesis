@@ -1,0 +1,21 @@
+[Unit]
+Description=Intent-based serverless orchestration REST API
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=cc
+Group=cc
+WorkingDirectory=/home/cc/masterThesis
+Environment=HOME=/home/cc
+Environment=PYTHONUNBUFFERED=1
+Environment=KUBECONFIG=/home/cc/.kube/config
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=/usr/bin/python3 -m controller.api_service --host 127.0.0.1 --port 8088
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target

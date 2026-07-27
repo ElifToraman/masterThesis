@@ -1,39 +1,38 @@
 from __future__ import annotations
 
 
-CLUSTER_REGISTRIES = {
-    "vm1-cluster": "host.docker.internal:5000",
-    "vm2-cluster": "host.docker.internal:5001",
-}
-
-
 class ImageResolutionError(RuntimeError):
     pass
 
 
-def resolve_cluster_image(
-    cluster_name: str,
+def resolve_image_for_registry(
+    *,
     image: str,
+    registry: str,
 ) -> str:
-    registry = CLUSTER_REGISTRIES.get(cluster_name)
-
-    if registry is None:
-        raise ImageResolutionError(
-            f"No registry configured for cluster {cluster_name}"
-        )
-
     image = image.strip()
+    registry = registry.strip().rstrip("/")
 
     if not image:
         raise ImageResolutionError(
             "Image must not be empty"
         )
 
-    # If the developer already sent a registry-qualified image,
-    # keep it as-is for now.
-    first_part = image.split("/", 1)[0]
+    if not registry:
+        raise ImageResolutionError(
+            "Registry must not be empty"
+        )
 
-    if "." in first_part or ":" in first_part or first_part == "localhost":
-        return image
+    image_without_registry = image
 
-    return f"{registry}/{image}"
+    if "/" in image:
+        first_part, remainder = image.split("/", maxsplit=1)
+
+        if (
+            "." in first_part
+            or ":" in first_part
+            or first_part == "localhost"
+        ):
+            image_without_registry = remainder
+
+    return f"{registry}/{image_without_registry}"

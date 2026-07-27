@@ -1,21 +1,21 @@
 from __future__ import annotations
 
+import argparse
 import json
 import subprocess
 from pathlib import Path
 
-from controller.intent_function_parser import parse_intent_function_payload
-
-
-CLUSTERS = [
-    "vm1-cluster",
-    "vm2-cluster",
-]
+from controller.runtime_config import (
+    DEFAULT_CLUSTER_CONFIG_FILE,
+    DEFAULT_SUBMISSION_FILE,
+    load_cluster_configs,
+    load_submission,
+)
 
 
 def service_exists(
     *,
-    cluster: str,
+    kubernetes_context: str,
     service_name: str,
     namespace: str,
 ) -> bool:
@@ -23,7 +23,7 @@ def service_exists(
         [
             "kubectl",
             "--context",
-            cluster,
+            kubernetes_context,
             "get",
             "ksvc",
             service_name,
@@ -40,7 +40,7 @@ def service_exists(
 
 def delete_service(
     *,
-    cluster: str,
+    kubernetes_context: str,
     service_name: str,
     namespace: str,
 ) -> str:
@@ -48,7 +48,7 @@ def delete_service(
         [
             "kubectl",
             "--context",
-            cluster,
+            kubernetes_context,
             "delete",
             "ksvc",
             service_name,
@@ -65,58 +65,80 @@ def delete_service(
 
     if result.returncode != 0:
         raise RuntimeError(
-            f"Failed cleanup on {cluster}: {output}"
+            f"Failed cleanup on {kubernetes_context}: {output}"
         )
 
     return output
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--submission",
+        type=Path,
+        default=DEFAULT_SUBMISSION_FILE,
+    )
+    parser.add_argument(
+        "--cluster-config",
+        type=Path,
+        default=DEFAULT_CLUSTER_CONFIG_FILE,
+    )
+    parser.add_argument(
+        "--run-id",
+        default=None,
+    )
+    args = parser.parse_args(argv)
+
     controller_directory = Path(__file__).resolve().parents[1]
 
     decision_file = (
         controller_directory
         / "results"
+        / "runs"
+        / args.run_id
+        / "decision.json"
+        if args.run_id
+        else controller_directory
+        / "results"
         / "decisions"
         / "latest-decision.json"
-    )
-
-    submission_file = (
-        controller_directory
-        / "examples"
-        / "hello-intent-function.yaml"
     )
 
     decision = json.loads(decision_file.read_text(encoding="utf-8"))
     selected_cluster = decision["selected_cluster"]
 
-    submission = parse_intent_function_payload(
-        submission_file.read_text(encoding="utf-8")
-    )
+    submission = load_submission(args.submission)
+    clusters = load_cluster_configs(args.cluster_config)
 
     service_name = submission.function.service_name
     namespace = submission.function.namespace
 
-    for cluster in CLUSTERS:
-        if cluster == selected_cluster:
-            print(f"{cluster}: selected cluster, keeping {service_name}")
+    for cluster_name, cluster in clusters.items():
+        if cluster_name == selected_cluster:
+            print(
+                f"{cluster_name}: selected cluster, "
+                f"keeping {service_name}"
+            )
             continue
 
         if not service_exists(
-            cluster=cluster,
+            kubernetes_context=cluster.kubernetes_context,
             service_name=service_name,
             namespace=namespace,
         ):
-            print(f"{cluster}: no stale {service_name} deployment found")
+            print(
+                f"{cluster_name}: no stale "
+                f"{service_name} deployment found"
+            )
             continue
 
         output = delete_service(
-            cluster=cluster,
+            kubernetes_context=cluster.kubernetes_context,
             service_name=service_name,
             namespace=namespace,
         )
 
-        print(f"{cluster}: {output}")
+        print(f"{cluster_name}: {output}")
 
 
 if __name__ == "__main__":

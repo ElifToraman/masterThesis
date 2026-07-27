@@ -8,6 +8,7 @@ from statistics import mean
 @dataclass(frozen=True)
 class ClusterBenchmarkResult:
     timestamp: datetime
+    run_id: str
 
     cluster_name: str
     kubernetes_context: str
@@ -24,10 +25,12 @@ class ClusterBenchmarkResult:
     first_invocation_latency_ms: float
     first_invocation_status_code: int | None
 
-    warm_latency_samples_ms: list[float]
+    warm_latency_samples_ms: tuple[float, ...]
 
     successful_requests: int
     failed_requests: int
+    benchmark_concurrency: int
+    measurement_duration_seconds: float
 
     average_cpu_usage_cores: float | None = None
     peak_cpu_usage_cores: float | None = None
@@ -49,6 +52,16 @@ class ClusterBenchmarkResult:
         return (
             self.successful_requests
             / self.total_requests
+        )
+
+    @property
+    def throughput_requests_per_second(self) -> float:
+        if self.measurement_duration_seconds <= 0:
+            return 0.0
+
+        return (
+            self.successful_requests
+            / self.measurement_duration_seconds
         )
 
     @property

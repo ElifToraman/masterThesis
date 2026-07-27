@@ -66,12 +66,14 @@ class ClusterDecisionCandidate:
     feasible: bool
     intent_satisfied: bool
     rejection_reasons: list[str]
+    objective_score: float
     score: float
 
 
 @dataclass(frozen=True)
 class PlacementDecision:
     timestamp: str
+    run_id: str | None
     function_name: str
     function_version: str
     service_name: str
@@ -103,6 +105,12 @@ class DecisionPolicy:
         default_required_memory_bytes: int = 128 * 1024 * 1024,
         cpu_safety_factor: float = 1.25,
         memory_safety_factor: float = 1.25,
+        maximum_benchmark_age_seconds: float = 300.0,
+        expected_run_id: str | None = None,
+        expected_images: dict[str, str] | None = None,
+        scoring_weights: dict[str, float] | None = None,
+        cold_start_reference_ms: float = 1000.0,
+        deployment_reference_ms: float = 60_000.0,
     ) -> None:
         self.benchmark_file = benchmark_file
         self.minimum_success_rate = minimum_success_rate
@@ -116,6 +124,45 @@ class DecisionPolicy:
         # Safety margin over observed benchmark usage.
         self.cpu_safety_factor = cpu_safety_factor
         self.memory_safety_factor = memory_safety_factor
+        self.maximum_benchmark_age_seconds = (
+            maximum_benchmark_age_seconds
+        )
+        self.expected_run_id = expected_run_id
+        self.expected_images = expected_images or {}
+        self.scoring_weights = scoring_weights or {
+            "objectives": 0.60,
+            "load": 0.15,
+            "cold_start": 0.10,
+            "deployment": 0.05,
+            "headroom": 0.10,
+        }
+        self.cold_start_reference_ms = (
+            cold_start_reference_ms
+        )
+        self.deployment_reference_ms = (
+            deployment_reference_ms
+        )
+
+        if (
+            self.cold_start_reference_ms <= 0
+            or self.deployment_reference_ms <= 0
+        ):
+            raise ValueError(
+                "Score normalization references must be positive"
+            )
+
+        if any(
+            weight < 0
+            for weight in self.scoring_weights.values()
+        ):
+            raise ValueError(
+                "Scoring weights must not be negative"
+            )
+
+        if sum(self.scoring_weights.values()) <= 0:
+            raise ValueError(
+                "At least one scoring weight must be positive"
+            )
 
     def decide(
         self,
@@ -194,6 +241,7 @@ class DecisionPolicy:
 
         return PlacementDecision(
             timestamp=datetime.now(timezone.utc).isoformat(),
+            run_id=self.expected_run_id,
             function_name=submission.function.name,
             function_version=submission.function.version,
             service_name=submission.function.service_name,
@@ -250,29 +298,37 @@ class DecisionPolicy:
             and "-benchmark" not in pod.pod_name
         ]
 
-        total_cpu_cores = sum(
-            node.cpu_core_count
-            for node in schedulable_nodes
-        )
-
-        available_cpu_cores = sum(
-            max(
+        # Every Kind node in a candidate cluster is a container running
+        # on the same Chameleon VM. Summing node capacities would therefore
+        # count the same physical CPU and memory once per Kind container.
+        # Placement feasibility must use the physical VM as the capacity
+        # boundary; node metrics are still used below for Kubernetes load
+        # and topology summaries.
+        if vm is None:
+            total_cpu_cores = 0
+            available_cpu_cores = 0.0
+            total_memory_bytes = 0
+            available_memory_bytes = 0
+        else:
+            total_cpu_cores = max(0, vm.cpu_core_count)
+            available_cpu_cores = max(
                 0.0,
-                node.cpu_core_count
-                * (1.0 - node.cpu_usage_percent / 100.0),
+                total_cpu_cores
+                * (1.0 - vm.cpu_usage_percent / 100.0),
             )
-            for node in schedulable_nodes
-        )
+            available_cpu_cores = min(
+                float(total_cpu_cores),
+                available_cpu_cores,
+            )
 
-        total_memory_bytes = sum(
-            node.memory_total_bytes
-            for node in schedulable_nodes
-        )
-
-        available_memory_bytes = sum(
-            node.memory_available_bytes
-            for node in schedulable_nodes
-        )
+            total_memory_bytes = max(
+                0,
+                vm.memory_total_bytes,
+            )
+            available_memory_bytes = min(
+                total_memory_bytes,
+                max(0, vm.memory_available_bytes),
+            )
 
         average_node_cpu = self._average(
             [
@@ -389,37 +445,92 @@ class DecisionPolicy:
                 "insufficient_available_memory"
             )
 
+        observed_metrics = {
+            "benchmark_success_rate": benchmark_success_rate,
+            "benchmark_average_latency_ms": (
+                benchmark_average_latency_ms
+            ),
+            "benchmark_p95_latency_ms": benchmark_p95_latency_ms,
+            "benchmark_p50_latency_ms": self._number(
+                benchmark,
+                "p50_warm_latency_ms",
+            ),
+            "benchmark_first_invocation_latency_ms": (
+                benchmark_first_invocation_latency_ms
+            ),
+            "benchmark_deployment_duration_ms": (
+                benchmark_deployment_duration_ms
+            ),
+            "benchmark_throughput_requests_per_second": self._number(
+                benchmark,
+                "throughput_requests_per_second",
+            ),
+            "vm_cpu_usage_percent": (
+                vm.cpu_usage_percent if vm is not None else None
+            ),
+            "vm_memory_usage_percent": (
+                vm.memory_usage_percent if vm is not None else None
+            ),
+            "available_cpu_cores": available_cpu_cores,
+            "available_memory_bytes": float(
+                available_memory_bytes
+            ),
+        }
+
         objective_results = [
-            self._objective_satisfied(
+            self._requirement_satisfied(
                 objective=objective,
-                benchmark=benchmark,
+                observed_metrics=observed_metrics,
             )
             for objective in submission.intent.objectives
         ]
 
-        supported_objective_results = [
-            result
-            for result in objective_results
-            if result is not None
-        ]
+        for objective, result in zip(
+            submission.intent.objectives,
+            objective_results,
+        ):
+            if result is None:
+                rejection_reasons.append(
+                    f"unsupported_intent_objective:{objective.name}"
+                )
 
-        if not supported_objective_results:
+        if not objective_results:
             rejection_reasons.append(
                 "no_supported_intent_objective"
             )
 
         intent_satisfied = (
-            bool(supported_objective_results)
-            and all(supported_objective_results)
+            bool(objective_results)
+            and all(
+                result is True
+                for result in objective_results
+            )
         )
+
+        for constraint in submission.intent.constraints:
+            constraint_result = self._requirement_satisfied(
+                objective=constraint,
+                observed_metrics=observed_metrics,
+            )
+
+            if constraint_result is None:
+                rejection_reasons.append(
+                    f"unsupported_constraint:{constraint.name}"
+                )
+            elif not constraint_result:
+                rejection_reasons.append(
+                    f"constraint_violated:{constraint.name}"
+                )
 
         feasible = not rejection_reasons
 
+        objective_score = self._weighted_objective_score(
+            objectives=submission.intent.objectives,
+            observed_metrics=observed_metrics,
+        )
+
         score = self._score(
-            benchmark_p95_latency_ms=benchmark_p95_latency_ms,
-            benchmark_average_latency_ms=(
-                benchmark_average_latency_ms
-            ),
+            objective_score=objective_score,
             benchmark_first_invocation_latency_ms=(
                 benchmark_first_invocation_latency_ms
             ),
@@ -428,7 +539,9 @@ class DecisionPolicy:
             ),
             average_node_cpu_usage_percent=average_node_cpu,
             average_node_memory_usage_percent=average_node_memory,
+            total_cpu_cores=total_cpu_cores,
             available_cpu_cores=available_cpu_cores,
+            total_memory_bytes=total_memory_bytes,
             available_memory_bytes=available_memory_bytes,
         )
 
@@ -504,73 +617,74 @@ class DecisionPolicy:
             feasible=feasible,
             intent_satisfied=intent_satisfied,
             rejection_reasons=rejection_reasons,
+            objective_score=round(objective_score, 4),
             score=round(score, 4),
         )
 
     def _score(
         self,
         *,
-        benchmark_p95_latency_ms: float | None,
-        benchmark_average_latency_ms: float | None,
+        objective_score: float,
         benchmark_first_invocation_latency_ms: float | None,
         benchmark_deployment_duration_ms: float | None,
         average_node_cpu_usage_percent: float,
         average_node_memory_usage_percent: float,
+        total_cpu_cores: int,
         available_cpu_cores: float,
+        total_memory_bytes: int,
         available_memory_bytes: int,
     ) -> float:
-        """
-        Lower score is better.
-
-        Main priority:
-          1. benchmark p95 warm latency
-          2. benchmark average warm latency
-          3. current CPU and memory load
-          4. cold-start / deployment penalty
-          5. resource headroom bonus
-        """
-
-        p95 = benchmark_p95_latency_ms
-        if p95 is None:
-            p95 = 1_000_000.0
-
-        average = benchmark_average_latency_ms
-        if average is None:
-            average = p95
-
-        first_invocation = (
-            benchmark_first_invocation_latency_ms or 0.0
+        # Every component is dimensionless and bounded to [0, 1].
+        load = self._clamp01(
+            (
+                average_node_cpu_usage_percent
+                + average_node_memory_usage_percent
+            )
+            / 200.0
         )
-
-        deployment = benchmark_deployment_duration_ms or 0.0
-
-        memory_headroom_gb = (
-            available_memory_bytes / 1024 / 1024 / 1024
+        cold_start = self._clamp01(
+            (benchmark_first_invocation_latency_ms or 0.0)
+            / self.cold_start_reference_ms
         )
-
-        return (
-            p95 * 1.00
-            + average * 0.20
-            + average_node_cpu_usage_percent * 0.10
-            + average_node_memory_usage_percent * 0.05
-            + first_invocation * 0.01
-            + deployment * 0.001
-            - available_cpu_cores * 0.10
-            - memory_headroom_gb * 0.05
+        deployment = self._clamp01(
+            (benchmark_deployment_duration_ms or 0.0)
+            / self.deployment_reference_ms
         )
+        cpu_headroom = self._clamp01(
+            available_cpu_cores
+            / max(float(total_cpu_cores), 1.0)
+        )
+        memory_headroom = self._clamp01(
+            available_memory_bytes
+            / max(float(total_memory_bytes), 1.0)
+        )
+        headroom_penalty = 1.0 - (
+            cpu_headroom + memory_headroom
+        ) / 2.0
 
-    def _objective_satisfied(
+        components = {
+            "objectives": self._clamp01(objective_score),
+            "load": load,
+            "cold_start": cold_start,
+            "deployment": deployment,
+            "headroom": headroom_penalty,
+        }
+        total_weight = sum(self.scoring_weights.values())
+
+        return sum(
+            components.get(name, 0.0) * weight
+            for name, weight in self.scoring_weights.items()
+        ) / total_weight
+
+    def _requirement_satisfied(
         self,
         *,
         objective: Objective,
-        benchmark: dict[str, Any] | None,
+        observed_metrics: dict[str, float | None],
     ) -> bool | None:
-        if benchmark is None:
-            return False
-
         observed_value = self._objective_observed_value(
             objective=objective,
-            benchmark=benchmark,
+            observed_metrics=observed_metrics,
         )
 
         if observed_value is None:
@@ -592,54 +706,105 @@ class DecisionPolicy:
         self,
         *,
         objective: Objective,
-        benchmark: dict[str, Any],
+        observed_metrics: dict[str, float | None],
     ) -> float | None:
         measured_by = objective.measured_by.lower()
         name = objective.name.lower()
         text = f"{measured_by} {name}"
 
         if "p95" in text:
-            return self._number(
-                benchmark,
-                "p95_warm_latency_ms",
-            )
+            return observed_metrics["benchmark_p95_latency_ms"]
 
         if "p50" in text:
-            return self._number(
-                benchmark,
-                "p50_warm_latency_ms",
-            )
+            return observed_metrics["benchmark_p50_latency_ms"]
 
         if (
             "average" in text
             or "avg" in text
             or "mean" in text
         ):
-            return self._number(
-                benchmark,
-                "average_warm_latency_ms",
-            )
+            return observed_metrics[
+                "benchmark_average_latency_ms"
+            ]
 
         if "first" in text or "cold" in text:
-            return self._number(
-                benchmark,
-                "first_invocation_latency_ms",
-            )
+            return observed_metrics[
+                "benchmark_first_invocation_latency_ms"
+            ]
 
         if "deploy" in text:
-            return self._number(
-                benchmark,
-                "deployment_duration_ms",
-            )
+            return observed_metrics[
+                "benchmark_deployment_duration_ms"
+            ]
+
+        if "success" in text:
+            return observed_metrics["benchmark_success_rate"]
+
+        if "throughput" in text or "request" in text:
+            return observed_metrics[
+                "benchmark_throughput_requests_per_second"
+            ]
+
+        if "available" in text and "cpu" in text:
+            return observed_metrics["available_cpu_cores"]
+
+        if "available" in text and "memory" in text:
+            value = observed_metrics["available_memory_bytes"]
+            return self._convert_bytes(value, objective.unit)
+
+        if "cpu" in text and (
+            "usage" in text or "load" in text
+        ):
+            return observed_metrics["vm_cpu_usage_percent"]
+
+        if "memory" in text and (
+            "usage" in text or "load" in text
+        ):
+            return observed_metrics["vm_memory_usage_percent"]
 
         # Default for normal latency/response-time intent.
         if "latency" in text or "response" in text:
-            return self._number(
-                benchmark,
-                "p95_warm_latency_ms",
-            )
+            return observed_metrics["benchmark_p95_latency_ms"]
 
         return None
+
+    def _weighted_objective_score(
+        self,
+        *,
+        objectives: list[Objective],
+        observed_metrics: dict[str, float | None],
+    ) -> float:
+        weighted_total = 0.0
+        total_weight = 0.0
+
+        for objective in objectives:
+            observed = self._objective_observed_value(
+                objective=objective,
+                observed_metrics=observed_metrics,
+            )
+
+            if observed is None:
+                continue
+
+            target = objective.value
+
+            if objective.operator in {"<", "<="}:
+                ratio = observed / max(abs(target), 1e-9)
+            elif objective.operator in {">", ">="}:
+                ratio = target / max(abs(observed), 1e-9)
+            else:
+                ratio = abs(observed - target) / max(
+                    abs(target),
+                    1.0,
+                )
+
+            weighted_total += self._clamp01(ratio) * objective.weight
+            total_weight += objective.weight
+
+        if total_weight == 0:
+            return 1.0
+
+        return weighted_total / total_weight
 
     def _load_latest_benchmarks(
         self,
@@ -681,6 +846,36 @@ class DecisionPolicy:
 
                 cluster_name = record.get("cluster_name")
                 if not isinstance(cluster_name, str):
+                    continue
+
+                timestamp = self._timestamp(record)
+                age_seconds = (
+                    datetime.now(timezone.utc) - timestamp
+                ).total_seconds()
+
+                if (
+                    age_seconds < 0
+                    or age_seconds
+                    > self.maximum_benchmark_age_seconds
+                ):
+                    continue
+
+                if (
+                    self.expected_run_id is not None
+                    and record.get("run_id")
+                    != self.expected_run_id
+                ):
+                    continue
+
+                expected_image = self.expected_images.get(
+                    cluster_name
+                )
+
+                if (
+                    expected_image is not None
+                    and record.get("image_reference")
+                    != expected_image
+                ):
                     continue
 
                 current = latest_by_cluster.get(cluster_name)
@@ -799,6 +994,36 @@ class DecisionPolicy:
             return 0.0
 
         return sum(values) / len(values)
+
+    def _convert_bytes(
+        self,
+        value: float | None,
+        unit: str | None,
+    ) -> float | None:
+        if value is None:
+            return None
+
+        normalized_unit = (unit or "bytes").strip().lower()
+        divisors = {
+            "b": 1,
+            "byte": 1,
+            "bytes": 1,
+            "kib": 1024,
+            "mib": 1024**2,
+            "gib": 1024**3,
+            "kb": 1000,
+            "mb": 1000**2,
+            "gb": 1000**3,
+        }
+        divisor = divisors.get(normalized_unit)
+
+        if divisor is None:
+            return None
+
+        return value / divisor
+
+    def _clamp01(self, value: float) -> float:
+        return min(1.0, max(0.0, value))
 
 
 def write_decision(

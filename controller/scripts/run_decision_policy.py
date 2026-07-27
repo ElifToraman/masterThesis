@@ -1,59 +1,57 @@
 from __future__ import annotations
 
-import json
-from dataclasses import asdict
+import argparse
 from pathlib import Path
 
 from controller.decision_policy import (
     DecisionPolicy,
     write_decision,
 )
-from controller.intent_function_parser import (
-    parse_intent_function_payload,
-)
-from controller.monitoring.models import VMConfig
+from controller.image_resolver import resolve_image_for_registry
 from controller.monitoring.monitoring_service import MonitoringService
-from controller.monitoring.vm import VM
+from controller.runtime_config import (
+    DEFAULT_CLUSTER_CONFIG_FILE,
+    DEFAULT_POLICY_CONFIG_FILE,
+    DEFAULT_SUBMISSION_FILE,
+    load_cluster_configs,
+    load_policy_config,
+    load_submission,
+)
 
 
-def create_vms() -> list[VM]:
-    return [
-        VM(
-            VMConfig(
-                name="vm1-cluster",
-                host="129.114.25.182",
-                ssh_user="cc",
-                ssh_key=Path.home() / ".ssh" / "chameleon_new",
-                prometheus_url="http://127.0.0.1:19091",
-            )
-        ),
-        VM(
-            VMConfig(
-                name="vm2-cluster",
-                host="129.114.25.80",
-                ssh_user="cc",
-                ssh_key=Path.home() / ".ssh" / "chameleon_new",
-                prometheus_url="http://127.0.0.1:19092",
-            )
-        ),
-    ]
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--submission",
+        type=Path,
+        default=DEFAULT_SUBMISSION_FILE,
+    )
+    parser.add_argument(
+        "--policy-config",
+        type=Path,
+        default=DEFAULT_POLICY_CONFIG_FILE,
+    )
+    parser.add_argument(
+        "--cluster-config",
+        type=Path,
+        default=DEFAULT_CLUSTER_CONFIG_FILE,
+    )
+    parser.add_argument(
+        "--run-id",
+        default=None,
+    )
+    args = parser.parse_args(argv)
 
-
-def main() -> None:
     controller_directory = Path(__file__).resolve().parents[1]
-
-    submission_file = (
-        controller_directory
-        / "examples"
-        / "hello-intent-function.yaml"
-    )
-
-    submission = parse_intent_function_payload(
-        submission_file.read_text(encoding="utf-8")
-    )
+    submission = load_submission(args.submission)
+    clusters = load_cluster_configs(args.cluster_config)
+    policy_config = load_policy_config(args.policy_config)
 
     monitoring = MonitoringService(
-        vms=create_vms(),
+        vms=[
+            cluster.create_vm()
+            for cluster in clusters.values()
+        ],
         collection_interval_seconds=10,
         output_directory=(
             controller_directory
@@ -75,6 +73,49 @@ def main() -> None:
                 / "results"
                 / "benchmarks.jsonl"
             ),
+            expected_run_id=args.run_id,
+            expected_images={
+                name: resolve_image_for_registry(
+                    image=submission.function.image,
+                    registry=cluster.image_registry,
+                )
+                for name, cluster in clusters.items()
+            },
+            minimum_success_rate=float(
+                policy_config["minimumBenchmarkSuccessRate"]
+            ),
+            maximum_benchmark_age_seconds=float(
+                policy_config["maximumBenchmarkAgeSeconds"]
+            ),
+            default_required_cpu_cores=float(
+                policy_config["defaultRequiredCpuCores"]
+            ),
+            default_required_memory_bytes=int(
+                float(
+                    policy_config[
+                        "defaultRequiredMemoryMiB"
+                    ]
+                )
+                * 1024**2
+            ),
+            cpu_safety_factor=float(
+                policy_config["cpuSafetyFactor"]
+            ),
+            memory_safety_factor=float(
+                policy_config["memorySafetyFactor"]
+            ),
+            scoring_weights={
+                str(name): float(weight)
+                for name, weight in policy_config[
+                    "scoringWeights"
+                ].items()
+            },
+            cold_start_reference_ms=float(
+                policy_config["coldStartReferenceMs"]
+            ),
+            deployment_reference_ms=float(
+                policy_config["deploymentReferenceMs"]
+            ),
         )
 
         decision = policy.decide(
@@ -93,6 +134,18 @@ def main() -> None:
             decision=decision,
             output_file=output_file,
         )
+
+        if args.run_id:
+            write_decision(
+                decision=decision,
+                output_file=(
+                    controller_directory
+                    / "results"
+                    / "runs"
+                    / args.run_id
+                    / "decision.json"
+                ),
+            )
 
         print(f"Decision mode: {decision.decision_mode}")
         print(f"Selected cluster: {decision.selected_cluster}")

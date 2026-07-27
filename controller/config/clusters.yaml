@@ -1,0 +1,16 @@
+clusters:
+  - name: vm1-cluster
+    kubernetesContext: vm1-cluster
+    host: 129.114.25.182
+    sshUser: cc
+    sshKey: ~/.ssh/chameleon_new
+    prometheusUrl: http://127.0.0.1:19091
+    imageRegistry: host.docker.internal:5000
+
+  - name: vm2-cluster
+    kubernetesContext: vm2-cluster
+    host: 129.114.25.80
+    sshUser: cc
+    sshKey: ~/.ssh/chameleon_new
+    prometheusUrl: http://127.0.0.1:19092
+    imageRegistry: host.docker.internal:5001

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +27,7 @@ class BenchmarkRepository:
         result: ClusterBenchmarkResult,
     ) -> None:
         record = asdict(result)
+        record["status"] = "succeeded"
 
         record["timestamp"] = (
             result.timestamp.isoformat()
@@ -47,7 +48,45 @@ class BenchmarkRepository:
         record["p95_warm_latency_ms"] = (
             result.p95_warm_latency_ms
         )
+        record["throughput_requests_per_second"] = (
+            result.throughput_requests_per_second
+        )
 
+        self._append(record)
+
+    def save_failure(
+        self,
+        *,
+        run_id: str,
+        cluster_name: str,
+        kubernetes_context: str,
+        function_name: str,
+        function_version: str,
+        image_reference: str,
+        error: Exception,
+    ) -> None:
+        self._append(
+            {
+                "timestamp": datetime.now(
+                    timezone.utc
+                ).isoformat(),
+                "run_id": run_id,
+                "status": "failed",
+                "cluster_name": cluster_name,
+                "kubernetes_context": kubernetes_context,
+                "function_name": function_name,
+                "function_version": function_version,
+                "image_reference": image_reference,
+                "error_type": type(error).__name__,
+                "error": str(error),
+                "success_rate": 0.0,
+            }
+        )
+
+    def _append(
+        self,
+        record: dict[str, Any],
+    ) -> None:
         with self.output_file.open(
             "a",
             encoding="utf-8",

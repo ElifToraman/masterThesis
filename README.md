@@ -1,950 +1,829 @@
-# Intent-Based Serverless Edge Testbed
+# Intent-Based Orchestration of Serverless Applications at the Edge
 
-> Master's Thesis: **Intent-Based Orchestration of Serverless Applications on the Edge Environment**  
-> University of Klagenfurt — Supervisor: Dr. Reza Farahani  
-> Baseline paper: Filinis et al. (2024) — *Intent-driven orchestration of serverless applications in the computing continuum.* Future Generation Computer Systems, 154, 72–86.
+Master's thesis research prototype for automatically placing a Knative
+serverless function on one of multiple independent edge clusters according to
+a user-defined intent.
 
-This repository contains a research prototype for intent-based orchestration of serverless function chains on edge environments.
+The current evaluated application is the plain `hello` function. The older
+`hello-instrumented` function and function-chain experiments are not part of
+the current controller workflow.
 
-The prototype uses two Chameleon Cloud virtual machines as independent edge clusters. Each VM runs a Kind-based Kubernetes cluster with Knative Serving, Kourier, a local Docker registry, and Prometheus/Grafana monitoring. VM-1 additionally hosts the intent controller. The controller reads a high-level latency intent, collects monitoring and probing data from both edge clusters, selects a suitable VM, deploys the complete function chain to that VM, and returns the selected public entry URL.
+## Current Status
 
-The current implementation focuses on **whole-chain placement** of a serverless function chain across two edge clusters.
-
----
-
-## Current Prototype Summary
-
-The evaluated application is a three-function serverless chain:
+The implemented system supports the following end-to-end flow:
 
 ```text
-f1 -> f2 -> f3
-````
-
-The client invokes only `f1`. Function `f1` calls `f2`, `f2` calls `f3`, and the response returns back through the chain.
-
-The current controller supports whole-chain placement. This means all functions are deployed to the same selected VM:
-
-```text
-[f1, f2, f3] = [vm1, vm1, vm1]
+User submits hello function + intent through REST
+  -> controller validates and stores the request
+  -> controller benchmarks every candidate cluster
+  -> controller collects VM, Kubernetes node, and pod metrics
+  -> decision policy checks feasibility and intent satisfaction
+  -> decision policy selects one edge cluster
+  -> controller deploys hello as a Knative Service
+  -> controller invokes and validates the final deployment
+  -> controller removes hello from non-selected clusters
+  -> controller continuously monitors the selected deployment
+  -> user invokes the returned Knative URL
 ```
 
-or:
+The controller selects a **cluster**. Kubernetes and Knative remain
+responsible for placing pods on nodes inside that cluster. This is the intended
+separation of responsibilities for the current thesis scope.
+
+Continuous monitoring currently detects and reports an intent violation. It
+does not yet automatically migrate the service to another cluster.
+
+## Testbed Architecture
 
 ```text
-[f1, f2, f3] = [vm2, vm2, vm2]
+MacBook client
+  |
+  | HTTP through an SSH tunnel
+  | Mac 127.0.0.1:8088 -> Controller 127.0.0.1:8088
+  v
+Controller VM: 129.114.27.169
+  |
+  |-- REST API and asynchronous run manager
+  |-- orchestrator
+  |-- monitoring and benchmarking
+  |-- decision policy
+  |-- Knative deployer and execution validator
+  |-- continuous post-deployment monitor
+  |
+  | kubectl context + SSH + Prometheus
+  +-------------------------> vm1-cluster
+  |                            Edge VM: 129.114.25.182
+  |                            Kind + Kubernetes + Knative
+  |                            Prometheus
+  |                            local registry
+  |
+  +-------------------------> vm2-cluster
+                               Edge VM: 129.114.25.80
+                               Kind + Kubernetes + Knative
+                               Prometheus
+                               local registry
 ```
 
-Automatic split placement, for example `[vm1, vm2, vm1]`, is not part of the current automatic controller and is treated as future work.
+### Machine Responsibilities
 
----
+| Machine | Responsibility |
+|---|---|
+| MacBook | Stores the development repository, submits the YAML through REST, checks status, and invokes the final URL |
+| Controller VM | Runs the API, orchestrator, monitoring, benchmarking, policy, deployment, cleanup, validation, and post-deployment monitor |
+| Edge VM 1 | Hosts the independent `vm1-cluster` Kind/Knative cluster and its local image registry |
+| Edge VM 2 | Hosts the independent `vm2-cluster` Kind/Knative cluster and its local image registry |
 
-## Architecture
+Normal operation does not require the user to SSH into either edge VM. The
+controller accesses them automatically.
 
-```text
-Local Developer MacBook
-├── ~/thesis/function-chain/
-│   ├── f1/
-│   ├── f2/
-│   ├── f3/
-│   ├── chain_intent.json
-│   ├── application_descriptor.json
-│   ├── controller_config.json
-│   ├── chain_controller.env
-│   ├── Makefile
-│   └── scripts/run_chain_workflow.sh
-│
-├── Docker Desktop
-│   └── builds linux/amd64 function images
-│
-├── kubectl / kn / func
-│   └── build, deploy, inspect, and invoke services
-│
-└── SSH tunnels
-    ├── 127.0.0.1:5000 -> VM-1 registry
-    ├── 127.0.0.1:5001 -> VM-2 registry
-    ├── 127.0.0.1:6443 -> VM-1 Kubernetes API
-    └── 127.0.0.1:6444 -> VM-2 Kubernetes API
+## Technologies
 
+| Technology | Role in the system |
+|---|---|
+| Chameleon Cloud | Provides the controller and edge virtual machines |
+| Ubuntu 22.04 | VM operating system |
+| Docker | Runs Kind nodes and local registries; builds the function image |
+| Local Docker registries | Store a cluster-accessible copy of the `hello` image for each edge VM |
+| Kind | Creates a multi-node Kubernetes cluster inside each edge VM |
+| Kubernetes | Manages nodes, pods, services, resources, and scheduling inside each selected cluster |
+| Knative Serving | Deploys the serverless function, provides the public service URL, revisions, scale-to-zero, and min/max scale annotations |
+| Kourier/Envoy | Provides Knative ingress and routes requests to the function |
+| Prometheus | Supplies Kubernetes node and pod metrics |
+| SSH | Gives the controller VM access to physical VM metrics and protects access to the REST API |
+| Python 3 | Implements the API, models, monitoring, benchmarking, policy, deployment, validation, and orchestration |
+| PyYAML | Parses the IntentFunction and cluster configuration |
+| `requests` / `urllib` | Executes benchmark, validation, API, and post-deployment HTTP requests |
+| systemd | Keeps the controller API and optional Prometheus port forwards alive across logout/reboot |
+| JSON, YAML, JSONL, CSV | Configuration, user input, status, decisions, benchmark evidence, and monitoring evidence |
 
-VM-1: 129.114.25.182 / 10.56.1.249
-┌────────────────────────────────────────────┐
-│ Ubuntu 22.04.5 LTS Chameleon KVM VM        │
-│ Docker daemon                              │
-│ registry:2 on 127.0.0.1:5000               │
-│ kind: vm1-cluster                          │
-│ Kubernetes v1.35.0                         │
-│ Knative Serving v1.21.2 + Kourier          │
-│ Prometheus + Grafana                       │
-│                                            │
-│ Intent controller                          │
-│ ~/chain-controller/scripts/                │
-│   chain_controller.sh                      │
-│   collect_chain_metrics.sh                 │
-│   decide_chain_placement.sh                │
-│   deploy_chain_selected.sh                 │
-└────────────────────────────────────────────┘
+No external web framework is required for the controller API. It uses Python's
+threaded HTTP server because the API is deliberately small and research
+oriented.
 
-
-VM-2: 129.114.25.80 / 10.56.2.149
-┌────────────────────────────────────────────┐
-│ Ubuntu 22.04.5 LTS Chameleon KVM VM        │
-│ Docker daemon                              │
-│ registry:2 on 127.0.0.1:5000               │
-│ kind: vm2-cluster                          │
-│ Kubernetes v1.35.0                         │
-│ Knative Serving v1.21.2 + Kourier          │
-│ Prometheus + Grafana                       │
-└────────────────────────────────────────────┘
-```
-
----
-
-## Testbed Configuration
-
-| Node | Role                             |        Public IP |  Kind API endpoint | Configuration                  |
-| ---- | -------------------------------- | ---------------: | -----------------: | ------------------------------ |
-| VM-1 | Edge cluster + intent controller | `129.114.25.182` | `10.56.1.249:6443` | `m1.large`, Ubuntu 22.04.5 LTS |
-| VM-2 | Edge cluster                     |  `129.114.25.80` | `10.56.2.149:6443` | `m1.large`, Ubuntu 22.04.5 LTS |
-
-Both VMs use the same Chameleon flavor:
-
-```text
-4 vCPU
-8 GB RAM
-40 GB disk
-```
-
----
-
-## Software Stack
-
-Each VM uses the following layered stack:
-
-```text
-Layer 4: Monitoring/control layer
-         Prometheus, Grafana, and VM-1 intent controller
-
-Layer 3: Serverless layer
-         Knative Serving and Kourier
-
-Layer 2: Kubernetes orchestration layer
-         Kind Kubernetes cluster
-
-Layer 1: Container runtime and registry layer
-         Docker, Kind node container, local registry
-
-Layer 0: Infrastructure layer
-         Ubuntu 22.04.5 LTS on Chameleon KVM VM
-```
-
-Two container runtimes are involved. Docker runs on the VM and starts the Kind node container and local registry. Inside the Kind node, containerd runs Kubernetes workloads such as Knative, Kourier, Prometheus, and the function pods.
-
----
-
-## Repository Structure
-
-Recommended local repository structure:
+## Repository Layout
 
 ```text
 .
-├── f1/
-│   └── function source code for f1
-├── f2/
-│   └── function source code for f2
-├── f3/
-│   └── function source code for f3
-├── scripts/
-│   ├── run_chain_workflow.sh
-│   ├── deploy_placement.sh
-│   ├── deploy_both_all_chain_existing.sh
-│   └── run_scheduling_experiment.sh
-├── chain_intent.json
-├── application_descriptor.json
-├── controller_config.json
-├── chain_controller.env
-├── Makefile
-└── README.md
+├── README.md
+├── controller/
+│   ├── api_service.py
+│   ├── orchestrator.py
+│   ├── decision_policy.py
+│   ├── deployer.py
+│   ├── execution_validator.py
+│   ├── post_deployment_monitor.py
+│   ├── runtime_config.py
+│   ├── image_resolver.py
+│   ├── intent_function_parser.py
+│   ├── benchmarking/
+│   ├── monitoring/
+│   ├── models/
+│   ├── scripts/
+│   ├── config/
+│   │   ├── clusters.yaml
+│   │   ├── policy.json
+│   │   └── runtime.yaml
+│   ├── examples/
+│   │   └── hello-intent-function.yaml
+│   ├── systemd/
+│   ├── tests/
+│   ├── API.md
+│   └── README.md
+└── hello/
+    ├── function/
+    ├── tests/
+    ├── Makefile
+    └── func.yaml
 ```
 
-VM-1 controller structure:
+## User Input: IntentFunction
+
+The REST client sends a single YAML or JSON document containing both the
+function description and its intent.
+
+The active example is:
 
 ```text
-~/chain-controller/
-├── chain_intent.json
-├── application_descriptor.json
-├── controller_config.json
-├── controller.env
-└── scripts/
-    ├── chain_controller.sh
-    ├── collect_chain_metrics.sh
-    ├── decide_chain_placement.sh
-    └── deploy_chain_selected.sh
+controller/examples/hello-intent-function.yaml
 ```
 
----
+Its main structure is:
 
-## Input Files
+```yaml
+apiVersion: intent.elif.dev/v1
+kind: IntentFunction
 
-The controller input is intentionally separated into three files.
+metadata:
+  name: hello-intent-function
 
-### `chain_intent.json`
+spec:
+  function:
+    name: hello
+    namespace: default
+    serviceName: hello
+    version: hello-latest
+    runtime: knative
+    image: elif/hello:latest
 
-The intent file contains the high-level objective and constraints. It should not contain probing or experiment parameters.
+  intent:
+    targetRef:
+      kind: KnativeService
+      name: default/hello
+
+    objectives:
+      - name: hello-p95-latency
+        description: P95 warm latency must be <= 50 ms
+        operator: "<="
+        value: 50
+        unit: ms
+        measuredBy: benchmark/hello/p95_warm_latency_ms
+```
+
+The parser validates the document and converts it into typed Python models.
+The REST endpoint currently intentionally accepts only the plain `hello`
+function. Benchmark duration, validation retries, and monitoring intervals are
+not user intent, so they are kept in the controller-owned runtime
+configuration instead of this submission.
+
+### Objective Fields
+
+| Field | Meaning |
+|---|---|
+| `name` | Human-readable objective identifier |
+| `measuredBy` | Metric that the policy evaluates |
+| `operator` | One of `<`, `<=`, `==`, `>=`, or `>` |
+| `value` | Target value |
+| `unit` | Optional measurement unit |
+| `weight` | Optional positive priority used in multi-objective scoring; default is `1.0` |
+
+Constraints use the same representation under `intent.constraints`.
+Unsupported objectives and constraints are not silently ignored: they make a
+cluster infeasible and appear in its rejection reasons.
+
+## Controller Configuration
+
+Cluster-specific information is centralized in:
+
+```text
+controller/config/clusters.yaml
+```
+
+For each cluster it defines:
+
+- logical cluster name
+- Kubernetes context
+- edge VM address and SSH credentials
+- Prometheus endpoint
+- local image registry address
+
+Policy parameters are centralized in:
+
+```text
+controller/config/policy.json
+```
+
+This includes:
+
+- minimum acceptable benchmark success rate
+- maximum benchmark age
+- default CPU and memory requirement
+- CPU and memory safety factors
+- cold-start and deployment normalization references
+- scoring weights
+
+The algorithm is therefore configurable without modifying
+`decision_policy.py`. The weights are thesis experiment parameters and should
+be justified with sensitivity analysis and evaluation results.
+
+Operational evaluation settings are centralized in:
+
+```text
+controller/config/runtime.yaml
+```
+
+This controller-owned file defines:
+
+- benchmark warm-up requests, concurrency, duration, timeouts, and resource
+  sampling interval;
+- final invocation attempts, timeout, and retry interval;
+- post-deployment monitoring interval, window size, minimum samples, and
+  request timeout.
+
+This separation keeps the responsibilities clear:
+
+```text
+IntentFunction = what the user wants
+runtime.yaml   = how the controller measures and verifies it
+policy.json    = how the controller evaluates and ranks candidates
+clusters.yaml  = which infrastructure the controller manages
+```
+
+The API validates all three controller configuration files at startup. Every
+orchestration uses the configured runtime profile; a REST client cannot
+silently change the experiment methodology inside its intent.
+
+## REST API Lifecycle
+
+The API runs continuously on the controller VM:
+
+```text
+127.0.0.1:8088
+```
+
+It is installed as:
+
+```text
+intent-controller-api.service
+```
+
+The service starts:
+
+```bash
+python3 -m controller.api_service \
+  --host 127.0.0.1 \
+  --port 8088
+```
+
+Binding to loopback avoids publishing an unauthenticated research API on the
+internet. The Mac reaches it through an SSH tunnel.
+
+### API Endpoints
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| `GET` | `/healthz` | API health, active orchestration, and monitored run |
+| `POST` | `/v1/orchestrations` | Submit an IntentFunction and start a run |
+| `GET` | `/v1/orchestrations/<run-id>` | Read run status, selected cluster, and final URL |
+| `GET` | `/v1/orchestrations/<run-id>/monitoring` | Read the latest post-deployment monitoring window |
+
+Run states are:
+
+```text
+accepted -> running -> succeeded
+                    \-> failed
+```
+
+`POST` returns `202 Accepted` immediately. The API validates and stores the
+submission, creates a run ID, and starts a background worker. That worker
+launches `controller.orchestrator` as a separate Python process and redirects
+its output into the run log.
+
+Only one orchestration may execute at once. A simultaneous second submission
+receives `409 Conflict`, preventing competing deployments from modifying the
+same clusters.
+
+## End-to-End Controller Workflow
+
+### 1. Submission and Validation
+
+`controller/api_service.py`:
+
+1. receives up to 1 MiB of YAML or JSON;
+2. validates the IntentFunction;
+3. confirms that the submission targets the supported `hello` function;
+4. creates `controller/results/runs/<run-id>/`;
+5. saves the exact request as `submission.yaml`;
+6. writes `status.json` with state `accepted`;
+7. starts an asynchronous orchestration worker.
+
+### 2. Orchestration
+
+`controller/orchestrator.py` runs these commands sequentially:
+
+```text
+controller.scripts.run_benchmark
+controller.scripts.run_decision_policy
+controller.scripts.deploy_selected
+controller.scripts.cleanup_non_selected
+```
+
+All stages receive the same submission, cluster configuration, runtime
+configuration, policy configuration where applicable, and run ID. If a stage
+exits unsuccessfully, later stages do not run and the API marks the run
+`failed`.
+
+### 3. Benchmarking
+
+For each configured cluster, the benchmark service:
+
+1. rewrites the logical image name for that cluster's registry;
+2. deploys a temporary Knative Service called `hello-benchmark`;
+3. waits for it to become Ready;
+4. records deployment duration;
+5. records the first invocation latency;
+6. sends warm-up requests;
+7. generates a concurrent, duration-based workload;
+8. measures successes, failures, latency distribution, and throughput;
+9. samples benchmark pod CPU and memory;
+10. deletes the temporary service in a `finally` cleanup path.
+
+The two clusters are isolated from each other. A benchmark failure on one
+cluster is saved as evidence and does not abort benchmarking of the healthy
+cluster.
+
+Recorded measurements include:
+
+- deployment duration
+- first-invocation/cold-start latency
+- average, p50, and p95 warm latency
+- successful and failed request counts
+- success rate
+- benchmark duration and concurrency
+- throughput
+- average and peak CPU
+- average and peak memory
+
+Results are appended to:
+
+```text
+controller/results/benchmarks.jsonl
+```
+
+Each record carries the orchestration run ID, function version, cluster, and
+resolved image reference.
+
+### 4. Monitoring
+
+The controller collects a coherent `MetricsSnapshot` for every candidate.
+
+#### Physical VM metrics
+
+Collected over SSH from `/proc` and `/proc/meminfo`:
+
+- reachability
+- SSH response time
+- physical CPU core count and CPU usage
+- total, used, and available physical memory
+- memory usage percentage
+- one-, five-, and fifteen-minute load average
+
+Physical VM capacity is used for feasibility. This prevents double-counting
+Kind worker containers that share the same underlying VM. For example, two
+Kind workers inside one 4-core/8-GB VM do not become 8 cores/16 GB in the
+policy.
+
+#### Kubernetes node metrics
+
+Collected through Prometheus:
+
+- node identity and role
+- CPU usage
+- memory usage
+- load average
+- query latency
+
+These metrics describe cluster load, but they are not summed as independent
+physical capacity.
+
+#### Pod metrics
+
+Collected through Prometheus:
+
+- pod, namespace, and node
+- CPU usage
+- memory working set and RSS
+- network receive/transmit rate
+- container count
+
+These metrics describe current workloads and the resource behaviour of
+`hello`.
+
+### 5. Decision Policy
+
+`controller/decision_policy.py` combines:
+
+- the submitted intent;
+- the current monitoring snapshot;
+- fresh benchmark records for the same run and expected image;
+- resource requirements and safety factors;
+- configurable normalized scoring weights.
+
+#### Benchmark validity
+
+A record is accepted only when it matches:
+
+- the submitted function name;
+- the function version;
+- the current run ID;
+- the cluster's resolved image reference;
+- the configured maximum age.
+
+This prevents a stale or unrelated benchmark from influencing a new
+placement.
+
+#### Feasibility
+
+A cluster can be rejected for:
+
+- unreachable VM or missing VM metrics;
+- missing node metrics;
+- missing or failed benchmark;
+- benchmark success rate below the configured minimum;
+- insufficient physical CPU or memory after safety factors;
+- unsupported objective or constraint;
+- violated hard constraint.
+
+#### Supported intent measurements
+
+The policy can evaluate:
+
+- p95, p50, and average warm latency;
+- first-invocation/cold-start latency;
+- deployment duration;
+- success rate;
+- throughput;
+- physical VM CPU or memory usage;
+- available physical CPU or memory.
+
+Multiple objectives are evaluated together. An objective's `weight` changes
+its contribution to the objective component of the score. Constraints are
+hard feasibility requirements.
+
+#### Normalized score
+
+Lower score is better. Each component is converted to a dimensionless value
+between `0` and `1` before weighting:
+
+```text
+score =
+  objectives_weight  * normalized_objective_penalty
+  + load_weight      * normalized_load
+  + cold_start_weight * normalized_cold_start
+  + deployment_weight * normalized_deployment_time
+  + headroom_weight  * normalized_headroom_penalty
+```
+
+The configured weights are normalized by their sum.
+
+Selection order:
+
+1. Select the lowest-score feasible cluster that satisfies all objectives.
+2. If no feasible cluster satisfies every objective, select the lowest-score
+   feasible cluster in `best-effort` mode.
+3. If no cluster is feasible, fail without deploying.
+
+The complete decision, candidate measurements, scores, and rejection reasons
+are saved per run.
+
+### 6. Knative Deployment
+
+The deployer:
+
+1. reads the selected cluster from the run-specific decision;
+2. resolves the image for that cluster's local registry;
+3. builds a Knative Service manifest;
+4. applies it using the selected Kubernetes context;
+5. includes Knative `min-scale` and `max-scale` annotations;
+6. waits for the service's Ready condition;
+7. reads the Knative URL.
+
+Kubernetes/Knative decides which worker node hosts the pod. The controller
+does not override the internal scheduler.
+
+### 7. Final Invocation Verification
+
+Deployment success means more than a Ready condition. The execution validator
+invokes the returned URL with configurable retries and records:
+
+- success/failure
+- number of attempts
+- HTTP status
+- latency
+- response body
+- error, if any
+
+If final invocation fails, the orchestration is marked failed.
+
+### 8. Cleanup
+
+After successful deployment and validation, the controller deletes the same
+Knative Service from every non-selected cluster. The selected cluster keeps
+the only active deployment.
+
+### 9. Continuous Post-Deployment Monitoring
+
+After a successful orchestration, the API starts a background monitor for the
+selected deployment. At each interval it:
+
+1. invokes the live Knative URL;
+2. records status and response latency;
+3. collects selected-cluster VM, node, and pod metrics;
+4. adds the observation to a bounded sliding window;
+5. calculates success rate, average, p50, and p95 latency;
+6. re-evaluates supported objectives and constraints;
+7. persists the sample and latest summary.
+
+Monitoring states:
+
+| State | Meaning |
+|---|---|
+| `waiting-for-deployment` | Orchestration has not completed |
+| `warming-up` | Fewer than the configured minimum samples exist |
+| `intent-satisfied` | All current live objective and constraint evaluations pass |
+| `intent-violated` | At least one live evaluation fails |
+| `monitoring-failed` | The monitoring loop could not start |
+
+When the API restarts, it finds the latest successful execution and resumes
+its monitor. Starting a newer successful run stops the previous monitor and
+monitors the new deployment.
+
+## Local Registries and Image Resolution
+
+The user submits a logical image:
+
+```text
+elif/hello:latest
+```
+
+The controller resolves it per candidate:
+
+```text
+vm1-cluster -> host.docker.internal:5000/elif/hello:latest
+vm2-cluster -> host.docker.internal:5001/elif/hello:latest
+```
+
+The same image must already be present in both registries before a complete
+two-cluster benchmark. Image build and push utilities live under `hello/`.
+The controller currently orchestrates existing images; it does not build
+source code received in the REST request.
+
+## Running a Complete Test from the Mac
+
+The API and orchestration run on the controller VM. The following client
+commands run on the Mac.
+
+### Mac Terminal 1: create the API tunnel
+
+```bash
+ssh -N \
+  -L 8088:127.0.0.1:8088 \
+  -i ~/.ssh/chameleon_new \
+  cc@129.114.27.169
+```
+
+No output is expected. Keep this terminal open.
+
+### Mac Terminal 2: health check
+
+```bash
+curl -s http://127.0.0.1:8088/healthz \
+  | python3 -m json.tool
+```
+
+### Mac Terminal 2: submit hello
+
+```bash
+cd /Users/eliftoraman/masterThesis
+
+curl -s -X POST \
+  -H 'Content-Type: application/yaml' \
+  --data-binary @controller/examples/hello-intent-function.yaml \
+  http://127.0.0.1:8088/v1/orchestrations \
+  | python3 -m json.tool
+```
+
+Copy the returned run ID:
+
+```bash
+RUN_ID="paste-run-id-here"
+```
+
+### Mac Terminal 2: check progress
+
+```bash
+curl -s \
+  "http://127.0.0.1:8088/v1/orchestrations/$RUN_ID" \
+  | python3 -m json.tool
+```
+
+Repeat until `state` is `succeeded` or `failed`.
+
+### Mac Terminal 2: invoke the selected deployment
+
+With `jq`:
+
+```bash
+FUNCTION_URL=$(
+  curl -s \
+    "http://127.0.0.1:8088/v1/orchestrations/$RUN_ID" \
+    | jq -r '.function_url'
+)
+
+echo "$FUNCTION_URL"
+curl -i "$FUNCTION_URL"
+```
+
+The expected response has HTTP 200 and contains:
 
 ```json
 {
-  "apiVersion": "intent.dsg/v1alpha1",
-  "kind": "Intent",
-  "metadata": {
-    "name": "function-chain-low-latency"
-  },
-  "spec": {
-    "targetRef": {
-      "kind": "ServerlessApplication",
-      "name": "function-chain"
-    },
-    "objectives": [
-      {
-        "name": "low-latency",
-        "metric": "chain_latency_ms",
-        "operator": "<=",
-        "value": 700,
-        "measuredBy": "controller/warm_internal_chain_latency"
-      }
-    ],
-    "properties": [
-      {
-        "name": "placement-scope",
-        "value": "edge"
-      }
-    ],
-    "constraints": [
-      {
-        "name": "placement-mode",
-        "value": "whole-chain"
-      }
-    ]
-  }
+  "message": "Hello, world"
 }
 ```
 
-Meaning:
-
-```text
-Application: function-chain
-Objective: low latency
-Requirement: chain latency <= 700 ms
-Measurement source: controller warm internal chain latency
-Placement scope: edge
-Placement mode: whole chain
-```
-
-### `application_descriptor.json`
-
-The application descriptor contains the topology of the serverless application.
-
-```json
-{
-  "application": "function-chain",
-  "entrypoint": "f1",
-  "functions": [
-    {
-      "name": "f1",
-      "next": "f2"
-    },
-    {
-      "name": "f2",
-      "next": "f3"
-    },
-    {
-      "name": "f3",
-      "next": null
-    }
-  ]
-}
-```
-
-Meaning:
-
-```text
-entrypoint = f1
-chain = f1 -> f2 -> f3
-```
-
-### `controller_config.json`
-
-The controller configuration contains experiment and probing parameters. These are not part of the high-level intent.
-
-```json
-{
-  "work_ms": 50,
-  "samples": 5,
-  "ignore_first_sample": true,
-  "decision_metric": "warm_internal_chain_latency",
-  "candidate_targets": ["vm1", "vm2"]
-}
-```
-
-Meaning:
-
-```text
-work_ms: simulated work per function
-samples: number of probing requests per candidate VM
-ignore_first_sample: ignore cold-start or scale-from-zero sample
-decision_metric: metric used to select the VM
-candidate_targets: edge VMs considered by the controller
-```
-
-### `chain_controller.env` / `controller.env`
-
-The local workflow creates a stable registry environment file and copies it to VM-1 as `~/chain-controller/controller.env`.
+### Mac Terminal 2: inspect continuous monitoring
 
 ```bash
-REGISTRY_VM1=host.docker.internal:5000/elif
-REGISTRY_VM2=host.docker.internal:5001/elif
+curl -s \
+  "http://127.0.0.1:8088/v1/orchestrations/$RUN_ID/monitoring" \
+  | python3 -m json.tool
 ```
 
-These registry names are stable across home, university, and other network locations. They replace the older approach that used the MacBook LAN IP in image names.
+The first state may be `warming-up`. Check again after the configured minimum
+number of samples.
 
----
+Stop only the Mac tunnel with `Ctrl+C` in Terminal 1. This does not stop the
+controller API, monitoring service, or deployed function.
 
-## Stable Registry Design
+## Operating the Controller VM
 
-Each VM runs a local Docker registry on `127.0.0.1:5000` inside the VM.
-
-The MacBook reaches the registries through SSH tunnels:
-
-```text
-Mac 127.0.0.1:5000 -> VM-1 127.0.0.1:5000
-Mac 127.0.0.1:5001 -> VM-2 127.0.0.1:5000
-```
-
-Docker Desktop on macOS reaches the Mac host through `host.docker.internal`. Therefore, images are built and pushed using stable registry names:
-
-```text
-host.docker.internal:5000/elif/f1:latest
-host.docker.internal:5000/elif/f2:latest
-host.docker.internal:5000/elif/f3:latest
-
-host.docker.internal:5001/elif/f1:latest
-host.docker.internal:5001/elif/f2:latest
-host.docker.internal:5001/elif/f3:latest
-```
-
-This avoids changing registry names whenever the MacBook moves between different networks.
-
-The Kind containerd configuration maps these stable image names to the in-VM registry container:
-
-```text
-host.docker.internal:5000 -> registry:5000   on VM-1
-host.docker.internal:5001 -> registry:5000   on VM-2
-```
-
-Knative is also configured to skip tag-to-digest resolution for these local HTTP registry names.
-
----
-
-## Required SSH Tunnels
-
-Open these two tunnels from the MacBook and keep both terminals running.
-
-### VM-1 tunnel
+The normal client does not need these commands. They are useful for
+administration and debugging.
 
 ```bash
-ssh -i ~/.ssh/chameleon_new -N \
-  -o ExitOnForwardFailure=yes \
-  -L 127.0.0.1:5000:127.0.0.1:5000 \
-  -L 127.0.0.1:6443:10.56.1.249:6443 \
-  cc@129.114.25.182
+ssh -i ~/.ssh/chameleon_new cc@129.114.27.169
 ```
 
-### VM-2 tunnel
+Check the API:
 
 ```bash
-ssh -i ~/.ssh/chameleon_new -N \
-  -o ExitOnForwardFailure=yes \
-  -L 127.0.0.1:5001:127.0.0.1:5000 \
-  -L 127.0.0.1:6444:10.56.2.149:6443 \
-  cc@129.114.25.80
+systemctl status intent-controller-api.service --no-pager
+curl -s http://127.0.0.1:8088/healthz
 ```
 
-Verify the Kubernetes API tunnels:
+Restart it:
 
 ```bash
-KUBECONFIG=~/.kube/vm1-config kubectl get nodes
-KUBECONFIG=~/.kube/vm2-config kubectl get nodes
+sudo systemctl restart intent-controller-api.service
 ```
 
-Verify the registry tunnels from the Mac host:
+Read logs:
 
 ```bash
-curl http://127.0.0.1:5000/v2/_catalog
-curl http://127.0.0.1:5001/v2/_catalog
+journalctl -u intent-controller-api.service -n 100 --no-pager
 ```
 
-Verify the registry tunnels from Docker Desktop:
+Check service placement:
 
 ```bash
-docker run --rm curlimages/curl:8.9.1 \
-  http://host.docker.internal:5000/v2/_catalog
-
-docker run --rm curlimages/curl:8.9.1 \
-  http://host.docker.internal:5001/v2/_catalog
+kubectl --context vm1-cluster get ksvc hello -n default
+kubectl --context vm2-cluster get ksvc hello -n default
 ```
 
-The Makefile provides the same checks:
+Only the selected cluster should contain the Ready `hello` service.
+
+## Evidence and Result Files
+
+Global append-only benchmark evidence:
+
+```text
+controller/results/benchmarks.jsonl
+```
+
+Latest convenience outputs:
+
+```text
+controller/results/decisions/latest-decision.json
+controller/results/executions/latest-execution.json
+```
+
+Run-specific evidence:
+
+```text
+controller/results/runs/<run-id>/
+├── submission.yaml
+├── status.json
+├── orchestrator.log
+├── decision.json
+├── execution.json
+└── post-deployment/
+    ├── samples.jsonl
+    ├── latest-summary.json
+    └── raw-metrics/
+```
+
+The run ID connects submission, benchmark, decision, deployment, execution,
+and monitoring evidence.
+
+## Running Tests
+
+From the repository root:
 
 ```bash
-make test-registries
+python3 -m unittest discover \
+  -s controller/tests \
+  -p 'test_*.py' \
+  -v
 ```
 
----
+The unit tests cover:
 
-## Docker Desktop Insecure Registries
+- REST submission and status behaviour
+- rejection of simultaneous runs
+- benchmark calculations and failure handling
+- decision feasibility, freshness, weights, constraints, and scoring
+- execution validation
+- post-deployment sliding-window monitoring
 
-Docker Desktop must allow the two local HTTP registry names:
+Unit tests use mocks and temporary directories where appropriate. They do not
+replace the live two-cluster experiment.
 
-```json
-{
-  "insecure-registries": [
-    "host.docker.internal:5000",
-    "host.docker.internal:5001"
-  ]
-}
-```
+## Implemented Design Improvements
 
-Restart Docker Desktop after changing this setting.
+The current controller addresses the main earlier prototype problems:
 
----
+| Earlier problem | Current solution |
+|---|---|
+| Kind worker capacity was double-counted | Physical VM cores and memory are used for feasibility |
+| Old benchmark could be reused | Age, run ID, function version, and image reference are validated |
+| Objective weight was unused | Weighted objective penalty is part of the normalized score |
+| Unsupported objectives were ignored | Unsupported objectives/constraints reject the candidate |
+| Score mixed incompatible units | All score components are normalized to `[0, 1]` |
+| Algorithm constants were hardcoded | Parameters and weights are in `policy.json` |
+| Only sequential benchmark requests | Configurable concurrent, duration-based workload |
+| Failure on one cluster aborted everything | Per-cluster failures are saved and healthy candidates continue |
+| Final URL was not verified | Final HTTP invocation evidence is required |
+| No live submission | Asynchronous REST API accepts YAML/JSON |
+| Port/API processes depended on a shell | systemd units provide restart and boot persistence |
+| No post-deployment view | Continuous sliding-window monitoring and REST reporting |
 
-## Kind Containerd Registry Mapping
+## Current Limitations and Future Work
 
-Run once on VM-1 unless the Kind cluster is recreated:
+The following are deliberately not yet implemented:
 
-```bash
-docker exec vm1-cluster-control-plane mkdir -p \
-  /etc/containerd/certs.d/host.docker.internal:5000
+- automatic migration or redeployment after `intent-violated`;
+- a full monitor-analyse-plan-execute remediation loop;
+- a controller-defined autoscaling algorithm beyond Knative annotations;
+- service-chain placement;
+- split placement across clusters;
+- network-aware routing or flow scheduling;
+- building arbitrary uploaded source code;
+- multiple simultaneous orchestration jobs;
+- authentication, authorization, TLS, and a public multi-user API;
+- a database or distributed run queue;
+- learned or experimentally optimized policy weights.
 
-cat <<'EOF' | docker exec -i vm1-cluster-control-plane tee \
-  /etc/containerd/certs.d/host.docker.internal:5000/hosts.toml
-server = "http://host.docker.internal:5000"
-
-[host."http://registry:5000"]
-  capabilities = ["pull", "resolve"]
-EOF
-
-docker exec vm1-cluster-control-plane systemctl restart containerd
-```
-
-Run once on VM-2 unless the Kind cluster is recreated:
-
-```bash
-docker exec vm2-cluster-control-plane mkdir -p \
-  /etc/containerd/certs.d/host.docker.internal:5001
-
-cat <<'EOF' | docker exec -i vm2-cluster-control-plane tee \
-  /etc/containerd/certs.d/host.docker.internal:5001/hosts.toml
-server = "http://host.docker.internal:5001"
-
-[host."http://registry:5000"]
-  capabilities = ["pull", "resolve"]
-EOF
-
-docker exec vm2-cluster-control-plane systemctl restart containerd
-```
-
----
-
-## Knative Registry Skip Configuration
-
-Run once per cluster unless the cluster is recreated.
-
-VM-1:
-
-```bash
-KUBECONFIG=~/.kube/vm1-config kubectl patch configmap config-deployment \
-  -n knative-serving \
-  --type merge \
-  -p '{"data":{"registries-skipping-tag-resolving":"host.docker.internal:5000,registry:5000,localhost:5000,127.0.0.1:5000"}}'
-
-KUBECONFIG=~/.kube/vm1-config kubectl rollout restart deployment controller -n knative-serving
-KUBECONFIG=~/.kube/vm1-config kubectl rollout status deployment controller -n knative-serving
-```
-
-VM-2:
-
-```bash
-KUBECONFIG=~/.kube/vm2-config kubectl patch configmap config-deployment \
-  -n knative-serving \
-  --type merge \
-  -p '{"data":{"registries-skipping-tag-resolving":"host.docker.internal:5001,registry:5000,localhost:5000,127.0.0.1:5001"}}'
-
-KUBECONFIG=~/.kube/vm2-config kubectl rollout restart deployment controller -n knative-serving
-KUBECONFIG=~/.kube/vm2-config kubectl rollout status deployment controller -n knative-serving
-```
-
----
-
-## Prometheus Access
-
-The controller runs on VM-1. Therefore, both Prometheus APIs must be reachable from VM-1.
-
-On VM-1 terminal 1:
-
-```bash
-KUBECONFIG=~/.kube/vm1-config kubectl -n monitoring port-forward \
-  svc/kube-prometheus-stack-prometheus 9091:9090
-```
-
-On VM-1 terminal 2:
-
-```bash
-KUBECONFIG=~/vm2-from-vm1-config kubectl -n monitoring port-forward \
-  svc/kube-prometheus-stack-prometheus 9092:9090
-```
-
-Verify from VM-1:
-
-```bash
-curl -s "http://127.0.0.1:9091/api/v1/query?query=up" | head
-curl -s "http://127.0.0.1:9092/api/v1/query?query=up" | head
-```
-
-The controller uses these endpoints:
+The next major control feature is:
 
 ```text
-127.0.0.1:9091 -> VM-1 Prometheus
-127.0.0.1:9092 -> VM-2 Prometheus
+live monitor detects violation
+  -> collect fresh evidence
+  -> benchmark feasible alternative clusters
+  -> run placement policy again
+  -> migrate/redeploy if the expected improvement exceeds a threshold
+  -> validate new deployment
+  -> remove old deployment
+  -> continue monitoring
 ```
 
-If these port-forwards are not running, latency probing still works, but Prometheus infrastructure metrics may show `NA` or zero values.
-
----
-
-## Controller Scripts
-
-The VM-1 controller is divided into four scripts.
-
-### `chain_controller.sh`
-
-Main orchestration script.
-
-Responsibilities:
-
-```text
-1. Read chain_intent.json
-2. Read application_descriptor.json
-3. Read controller_config.json
-4. Call collect_chain_metrics.sh
-5. Call decide_chain_placement.sh
-6. Call deploy_chain_selected.sh
-7. Print the selected chain URL
-```
-
-Control flow:
-
-```text
-chain_controller.sh
-  -> collect_chain_metrics.sh
-  -> decide_chain_placement.sh
-  -> deploy_chain_selected.sh
-```
-
-### `collect_chain_metrics.sh`
-
-Measurement script.
-
-Responsibilities:
-
-```text
-1. Read the intent and controller config
-2. Query Prometheus metrics from VM-1 and VM-2
-3. Actively probe the f1 public URL on VM-1 and VM-2
-4. Measure external HTTP latency
-5. Extract internal chain latency from the f1 response
-6. Ignore the first sample if configured
-7. Compute warm average latency values
-8. Write /tmp/chain_controller_metrics_summary.env
-```
-
-Prometheus is used for infrastructure metrics:
-
-```text
-CPU usage
-memory usage
-available replicas
-```
-
-Latency is currently measured by active probing. The response field `chain_duration_ms` is used as the internal chain latency.
-
-Example metric summary:
-
-```text
-VM1_WARM_INTERNAL=209.69
-VM2_WARM_INTERNAL=213.19
-VM1_WARM_EXTERNAL=218.24
-VM2_WARM_EXTERNAL=222.56
-VM1_WARM_VIOLATION_RATE=0.0
-VM2_WARM_VIOLATION_RATE=0.0
-```
-
-### `decide_chain_placement.sh`
-
-Decision script.
-
-Responsibilities:
-
-```text
-1. Read /tmp/chain_controller_metrics_summary.env
-2. Read the latency requirement from chain_intent.json
-3. Read the decision metric from controller_config.json
-4. Compare VM-1 and VM-2
-5. Select the VM with the lower selected metric value
-6. Check whether the selected value satisfies the intent
-7. Write /tmp/chain_decision.env
-```
-
-Example decision:
-
-```text
-SELECTED_VM=vm1
-SELECTED_VALUE=209.69
-INTENT_SATISFIED=true
-DECISION_METRIC=warm_internal_chain_latency
-SLA_MS=700
-```
-
-### `deploy_chain_selected.sh`
-
-Deployment script.
-
-Responsibilities:
-
-```text
-1. Receive selected VM as input
-2. Select the correct kubeconfig, registry, and floating IP
-3. Deploy f3, f2, and f1 as Knative Services
-4. Configure f1 to call f2 and f2 to call f3
-5. Wait until all Knative services are ready
-6. Write /tmp/selected_chain_url.txt
-```
-
-The active deployment script uses stable registry names:
-
-```bash
-REGISTRY_VM1="${REGISTRY_VM1:-host.docker.internal:5000/elif}"
-REGISTRY_VM2="${REGISTRY_VM2:-host.docker.internal:5001/elif}"
-```
-
-Example selected URL:
-
-```text
-http://f1.default.129.114.25.182.sslip.io
-```
-
----
-
-## Function Chain
-
-The application contains three functions:
-
-```text
-f1 -> f2 -> f3
-```
-
-The client invokes only `f1`.
-
-When the complete chain is deployed on one VM, internal Kubernetes DNS is used for inter-function communication:
-
-```text
-http://f2.default.svc.cluster.local
-http://f3.default.svc.cluster.local
-```
-
-The public entry URLs have the following form:
-
-```text
-VM-1: http://f1.default.129.114.25.182.sslip.io
-VM-2: http://f1.default.129.114.25.80.sslip.io
-```
-
-Example request payload:
-
-```json
-{
-  "work_ms": 50
-}
-```
-
-Example response:
-
-```json
-{
-  "function": "f1",
-  "message": "function chain completed",
-  "vm_floating_ip": "129.114.25.182",
-  "work_ms": 50,
-  "chain_duration_ms": 407.5,
-  "f2_response": {
-    "function": "f2",
-    "vm_floating_ip": "129.114.25.182",
-    "f3_response": {
-      "function": "f3",
-      "vm_floating_ip": "129.114.25.182"
-    }
-  }
-}
-```
-
-The `vm_floating_ip` fields confirm where the functions executed.
-
----
-
-## Makefile
-
-The Makefile uses stable registry names:
-
-```makefile
-REGISTRY_VM1 ?= host.docker.internal:5000/elif
-REGISTRY_VM2 ?= host.docker.internal:5001/elif
-```
-
-Useful commands:
-
-```bash
-make check
-make show-tunnels
-make test-registries
-
-make build-push-vm1
-make build-push-vm2
-make build-push-all
-
-make deploy-vm1
-make deploy-vm2
-
-make deploy-vm1-existing
-make deploy-vm2-existing
-
-make invoke-vm1
-make invoke-vm2
-
-make clean-vm1
-make clean-vm2
-```
-
----
-
-## Running the Full Workflow
-
-From the local developer laptop:
-
-```bash
-cd ~/thesis/function-chain
-./scripts/run_chain_workflow.sh
-```
-
-The workflow performs the following steps:
-
-```text
-1. Check Makefile configuration
-2. Test registry tunnels from the Mac host and Docker Desktop
-3. Create controller.env with stable registry names
-4. Build f1, f2, and f3 images for VM-1
-5. Push images to the VM-1 registry
-6. Build f1, f2, and f3 images for VM-2
-7. Push images to the VM-2 registry
-8. Copy chain_intent.json to VM-1
-9. Copy application_descriptor.json to VM-1
-10. Copy controller_config.json to VM-1
-11. Copy controller.env to VM-1
-12. Trigger the VM-1 controller through SSH
-13. Collect Prometheus metrics and active latency measurements
-14. Select the suitable VM
-15. Deploy the complete function chain to the selected VM
-16. Retrieve the selected f1 URL
-17. Invoke the selected chain from the local laptop
-```
-
-Expected controller output contains sections similar to:
-
-```text
-===== Collecting monitoring and latency metrics =====
-===== Deciding suitable VM for intent =====
-===== Deploying selected whole-chain placement =====
-===== Done =====
-```
-
-Example successful decision:
-
-```text
-Selected whole-chain placement: [vm1, vm1, vm1]
-Selected metric value: 209.69 ms
-Intent requirement: <= 700 ms
-Intent satisfied: true
-```
-
----
-
-## Manual Invocation
-
-After deployment, the selected URL is stored on VM-1:
-
-```text
-/tmp/selected_chain_url.txt
-```
-
-Retrieve it from the MacBook:
-
-```bash
-SELECTED_URL=$(ssh -i ~/.ssh/chameleon_new cc@129.114.25.182 \
-  'cat /tmp/selected_chain_url.txt')
-echo "$SELECTED_URL"
-```
-
-Invoke the selected chain:
-
-```bash
-curl -s -X POST "$SELECTED_URL" \
-  -H "Content-Type: application/json" \
-  -d '{"work_ms":50}' | python3 -m json.tool
-```
-
-Direct invocation examples:
-
-```bash
-curl -s -X POST "http://f1.default.129.114.25.182.sslip.io" \
-  -H "Content-Type: application/json" \
-  -d '{"work_ms":50}' | python3 -m json.tool
-
-curl -s -X POST "http://f1.default.129.114.25.80.sslip.io" \
-  -H "Content-Type: application/json" \
-  -d '{"work_ms":50}' | python3 -m json.tool
-```
-
----
-
-## Checking Controller Cleanliness
-
-The active VM-1 controller scripts should be:
-
-```text
-chain_controller.sh
-collect_chain_metrics.sh
-decide_chain_placement.sh
-deploy_chain_selected.sh
-```
-
-Check that there is no old LAN-IP or MAC-IP logic:
-
-```bash
-cd ~/chain-controller
-
-grep -RInE 'LAN_IP|MAC_IP|ipconfig|getifaddr|192\.168\.|143\.205\.|NEW_IP|\$\{MAC_IP\}|\$MAC_IP' . \
-  --exclude='*.bak*'
-```
-
-Expected result:
-
-```text
-no output
-```
-
----
-
-## When the Mac Network Changes
-
-No image registry changes are required.
-
-The current setup uses stable registry names:
-
-```text
-host.docker.internal:5000/elif
-host.docker.internal:5001/elif
-```
-
-Therefore, switching between home, university, or another Wi-Fi network does not require changing Docker registry names, containerd registry mappings, or Knative registry skip lists.
-
-The only requirement is to reopen the SSH tunnels:
-
-```bash
-ssh -i ~/.ssh/chameleon_new -N \
-  -o ExitOnForwardFailure=yes \
-  -L 127.0.0.1:5000:127.0.0.1:5000 \
-  -L 127.0.0.1:6443:10.56.1.249:6443 \
-  cc@129.114.25.182
-```
-
-```bash
-ssh -i ~/.ssh/chameleon_new -N \
-  -o ExitOnForwardFailure=yes \
-  -L 127.0.0.1:5001:127.0.0.1:5000 \
-  -L 127.0.0.1:6444:10.56.2.149:6443 \
-  cc@129.114.25.80
-```
-
----
-
-## Troubleshooting
-
-| Problem                                        | Likely Cause                                                                    | Fix                                                                                     |
-| ---------------------------------------------- | ------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| `kubectl connection refused`                   | Kubernetes API SSH tunnel is closed                                             | Reopen the Kubernetes API tunnel                                                        |
-| Docker push fails                              | Registry tunnel is closed or Docker Desktop cannot reach `host.docker.internal` | Run `make test-registries` and reopen tunnels                                           |
-| `ImagePullBackOff`                             | Kind/containerd cannot map the stable registry name to `registry:5000`          | Check `/etc/containerd/certs.d/host.docker.internal:<port>/hosts.toml` in the Kind node |
-| `RevisionFailed: Unable to fetch image`        | Knative tried HTTPS tag resolution on the HTTP registry                         | Patch `registries-skipping-tag-resolving` and restart the Knative controller            |
-| `kn: command not found` on VM-1                | Knative CLI is missing on VM-1                                                  | Install `kn` on VM-1 or add it to PATH                                                  |
-| Function runs on wrong VM                      | Wrong kubeconfig or registry selected                                           | Check `deploy_chain_selected.sh`, selected VM, and `controller.env`                     |
-| First latency sample is very high              | Cold start or scale-from-zero                                                   | Use `ignore_first_sample=true`                                                          |
-| Prometheus values show zero before probing     | Services may be scaled to zero or not scraped yet                               | Check after probing or verify Prometheus port-forward                                   |
-| Prometheus values show `NA`                    | Prometheus port-forward is not running on VM-1                                  | Start port-forwards for `9091` and `9092`                                               |
-| Final invocation differs from decision latency | New revision warm-up or transient network overhead                              | Repeat invocation or inspect warm samples                                               |
-
----
-
-## Current Scope
-
-Implemented:
-
-```text
-Two edge clusters
-Three-function serverless chain
-Low-latency intent
-Separated intent, application descriptor, and controller config
-Stable registry naming independent of Mac LAN IP
-Prometheus infrastructure monitoring
-Active latency probing
-Warm latency decision metric
-Whole-chain placement
-Knative deployment
-Local laptop invocation
-```
-
-Not yet implemented:
-
-```text
-Automatic per-function split placement
-Continuous closed-loop re-optimization
-Prometheus-native application latency metrics
-Reinforcement-learning scheduler
-Multi-application orchestration
-```
-
----
-
-## Notes
-
-This repository contains a master's thesis research prototype. Some values such as VM public IPs and private Kind API addresses are environment-specific.
-
-Do not commit private SSH keys, kubeconfig files, Chameleon credentials, or other secrets to the repository.
-
----
-
-## References
-
-* Chameleon Cloud: https://chameleoncloud.org
-* Kind: https://kind.sigs.k8s.io
-* Knative Serving: https://knative.dev/docs/serving/
-* Kourier: https://github.com/knative-extensions/net-kourier
-* Prometheus: https://prometheus.io
-* Filinis et al. (2024). *Intent-driven orchestration of serverless applications in the computing continuum.* Future Generation Computer Systems, 154, 72–86.
+Migration should include hysteresis, cooldown, and minimum-improvement
+thresholds to avoid oscillation between clusters.
+
+## Related Documentation
+
+- Controller-specific index: `controller/README.md`
+- REST endpoint reference: `controller/API.md`
+- Active example submission:
+  `controller/examples/hello-intent-function.yaml`
+- Thesis system explanation:
+  `docs/Intent_Based_Orchestration_System_Explanation.docx`

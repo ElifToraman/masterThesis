@@ -3,6 +3,10 @@ from __future__ import annotations
 import time
 import urllib.error
 import urllib.request
+from concurrent.futures import (
+    Future,
+    ThreadPoolExecutor,
+)
 from datetime import datetime, timezone
 
 from .benchmark_resource_sampler import (
@@ -80,41 +84,17 @@ class BenchmarkService:
                     request=request,
                 )
 
-            time.sleep(20)
-            warm_samples: list[float] = []
-            successful_requests = 0
-            failed_requests = 0
-            resource_samples: list[BenchmarkResourceSample] = []
-
-            for _ in range(request.measured_requests):
-                try:
-                    latency_ms, status_code = self._invoke(
-                        endpoint=endpoint,
-                        request=request,
-                    )
-
-                    if 200 <= status_code < 300:
-                        warm_samples.append(latency_ms)
-                        successful_requests += 1
-                    else:
-                        failed_requests += 1
-
-                    if self._resource_sampler is not None:
-                        sample = self._resource_sampler.sample(
-                            cluster_name=cluster_name,
-                            namespace=request.namespace,
-                            benchmark_service_name=service_name,
-                        )
-
-                        if sample is not None:
-                            resource_samples.append(sample)
-
-                except (
-                    TimeoutError,
-                    urllib.error.URLError,
-                    RuntimeError,
-                ):
-                    failed_requests += 1
+            (
+                warm_samples,
+                successful_requests,
+                failed_requests,
+                measurement_duration_seconds,
+                resource_samples,
+            ) = self._run_measured_load(
+                cluster_name=cluster_name,
+                endpoint=endpoint,
+                request=request,
+            )
 
             resource_summary = None
 
@@ -125,6 +105,7 @@ class BenchmarkService:
 
             return ClusterBenchmarkResult(
                 timestamp=datetime.now(timezone.utc),
+                run_id=request.run_id,
                 cluster_name=cluster_name,
                 kubernetes_context=kubernetes_context,
                 function_name=request.function_name,
@@ -144,6 +125,11 @@ class BenchmarkService:
                 warm_latency_samples_ms=tuple(warm_samples),
                 successful_requests=successful_requests,
                 failed_requests=failed_requests,
+                benchmark_concurrency=request.concurrency,
+                measurement_duration_seconds=round(
+                    measurement_duration_seconds,
+                    3,
+                ),
                 average_cpu_usage_cores=(
                     resource_summary.average_cpu_usage_cores
                     if resource_summary is not None
@@ -172,6 +158,208 @@ class BenchmarkService:
                 namespace=request.namespace,
                 service_name=service_name,
             )
+
+    def _run_measured_load(
+        self,
+        *,
+        cluster_name: str,
+        endpoint: str,
+        request: BenchmarkRequest,
+    ) -> tuple[
+        list[float],
+        int,
+        int,
+        float,
+        list[BenchmarkResourceSample],
+    ]:
+        started_at = time.monotonic()
+        deadline = (
+            started_at + request.measurement_duration_seconds
+            if request.measurement_duration_seconds > 0
+            else None
+        )
+
+        with ThreadPoolExecutor(
+            max_workers=request.concurrency,
+            thread_name_prefix="benchmark-request",
+        ) as executor:
+            futures = self._start_load_workers(
+                executor=executor,
+                endpoint=endpoint,
+                request=request,
+                deadline=deadline,
+            )
+            resource_samples = self._sample_while_running(
+                futures=futures,
+                cluster_name=cluster_name,
+                request=request,
+            )
+
+        samples: list[float] = []
+        successful = 0
+        failed = 0
+
+        for future in futures:
+            worker_samples, worker_successful, worker_failed = (
+                future.result()
+            )
+            samples.extend(worker_samples)
+            successful += worker_successful
+            failed += worker_failed
+
+        duration = time.monotonic() - started_at
+
+        return (
+            samples,
+            successful,
+            failed,
+            duration,
+            resource_samples,
+        )
+
+    def _start_load_workers(
+        self,
+        *,
+        executor: ThreadPoolExecutor,
+        endpoint: str,
+        request: BenchmarkRequest,
+        deadline: float | None,
+    ) -> list[
+        Future[tuple[list[float], int, int]]
+    ]:
+        if deadline is not None:
+            return [
+                executor.submit(
+                    self._duration_worker,
+                    endpoint,
+                    request,
+                    deadline,
+                )
+                for _ in range(request.concurrency)
+            ]
+
+        request_counts = [
+            request.measured_requests
+            // request.concurrency
+            for _ in range(request.concurrency)
+        ]
+
+        for index in range(
+            request.measured_requests % request.concurrency
+        ):
+            request_counts[index] += 1
+
+        return [
+            executor.submit(
+                self._fixed_count_worker,
+                endpoint,
+                request,
+                count,
+            )
+            for count in request_counts
+            if count > 0
+        ]
+
+    def _duration_worker(
+        self,
+        endpoint: str,
+        request: BenchmarkRequest,
+        deadline: float,
+    ) -> tuple[list[float], int, int]:
+        samples: list[float] = []
+        successful = 0
+        failed = 0
+
+        while time.monotonic() < deadline:
+            result = self._measure_one(endpoint, request)
+
+            if result is None:
+                failed += 1
+            else:
+                latency, succeeded = result
+
+                if succeeded:
+                    samples.append(latency)
+                    successful += 1
+                else:
+                    failed += 1
+
+        return samples, successful, failed
+
+    def _fixed_count_worker(
+        self,
+        endpoint: str,
+        request: BenchmarkRequest,
+        count: int,
+    ) -> tuple[list[float], int, int]:
+        samples: list[float] = []
+        successful = 0
+        failed = 0
+
+        for _ in range(count):
+            result = self._measure_one(endpoint, request)
+
+            if result is None:
+                failed += 1
+            else:
+                latency, succeeded = result
+
+                if succeeded:
+                    samples.append(latency)
+                    successful += 1
+                else:
+                    failed += 1
+
+        return samples, successful, failed
+
+    def _measure_one(
+        self,
+        endpoint: str,
+        request: BenchmarkRequest,
+    ) -> tuple[float, bool] | None:
+        try:
+            latency_ms, status_code = self._invoke(
+                endpoint=endpoint,
+                request=request,
+            )
+        except (
+            TimeoutError,
+            urllib.error.URLError,
+            RuntimeError,
+        ):
+            return None
+
+        return latency_ms, 200 <= status_code < 300
+
+    def _sample_while_running(
+        self,
+        *,
+        futures: list[Future],
+        cluster_name: str,
+        request: BenchmarkRequest,
+    ) -> list[BenchmarkResourceSample]:
+        samples: list[BenchmarkResourceSample] = []
+
+        if self._resource_sampler is None:
+            return samples
+
+        while any(not future.done() for future in futures):
+            sample = self._resource_sampler.sample(
+                cluster_name=cluster_name,
+                namespace=request.namespace,
+                benchmark_service_name=(
+                    request.benchmark_service_name
+                ),
+            )
+
+            if sample is not None:
+                samples.append(sample)
+
+            time.sleep(
+                request.resource_sample_interval_seconds
+            )
+
+        return samples
 
     def _invoke(
         self,

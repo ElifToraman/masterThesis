@@ -1,0 +1,25 @@
+# Controller-owned operational settings.
+#
+# These values define how the controller evaluates and verifies a submitted
+# intent. They are intentionally separate from the user's IntentFunction,
+# which describes what the user wants rather than how the controller runs its
+# experiment.
+
+benchmark:
+  warmupRequests: 5
+  concurrency: 5
+  durationSeconds: 15
+  resourceSampleIntervalSeconds: 1
+  requestTimeoutSeconds: 10
+  deploymentTimeoutSeconds: 180
+
+validation:
+  maximumAttempts: 5
+  timeoutSeconds: 10
+  retryIntervalSeconds: 2
+
+postDeploymentMonitoring:
+  intervalSeconds: 10
+  windowSize: 10
+  minimumSamples: 3
+  requestTimeoutSeconds: 5

@@ -84,6 +84,7 @@ class Objective:
 class Intent:
     target_ref: TargetRef
     objectives: list[Objective]
+    constraints: list[Objective] = field(default_factory=list)
     properties: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:

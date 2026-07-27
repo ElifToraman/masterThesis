@@ -25,7 +25,7 @@ def hello():
     work_duration = time.time() - work_start
 
     response = {
-        "message": f"Hello, {name}",
+        "message": f"Hello from version 2, {name}",
         "pod": os.environ.get('HOSTNAME', 'unknown'),
         "hostname": socket.gethostname(),
         "vm_floating_ip": os.environ.get('VM_FLOATING_IP', 'not-set'),
