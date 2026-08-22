@@ -22,19 +22,21 @@ REST IntentFunction submission
   -> select the lowest-score suitable cluster
   -> deploy and validate hello
   -> clean the non-selected cluster
-  -> continuously monitor the selected deployment
+  -> continuously monitor the deployment and both clusters
+  -> automatically re-evaluate persistent intent violations
+  -> retain or migrate the placement and continue monitoring
 ```
 
 ## Main Files
 
 | File | Responsibility |
 |---|---|
-| `api_service.py` | REST endpoints, asynchronous runs, status persistence, monitor lifecycle and recovery |
+| `api_service.py` | REST endpoints, asynchronous runs, monitor lifecycle, violation-triggered runs, migration evidence and recovery |
 | `orchestrator.py` | Runs benchmark, decision, deployment, and cleanup stages |
 | `decision_policy.py` | Feasibility, intent evaluation, normalized weighted scoring, and placement |
 | `deployer.py` | Builds and applies the Knative Service and waits for readiness |
 | `execution_validator.py` | Invokes the final URL and writes execution evidence |
-| `post_deployment_monitor.py` | Sliding-window live probes, resource snapshots, and intent evaluation |
+| `post_deployment_monitor.py` | Sliding-window probes, all-cluster resource snapshots, intent evaluation, and guarded remediation trigger |
 | `runtime_config.py` | Loads submission, cluster, policy, and operational runtime configuration |
 | `intent_function_parser.py` | Parses and validates YAML/JSON IntentFunction documents |
 | `image_resolver.py` | Maps the logical image to each local edge registry |
@@ -43,10 +45,9 @@ REST IntentFunction submission
 | `scripts/` | Executable orchestration stages |
 | `config/clusters.yaml` | Cluster contexts, hosts, Prometheus endpoints, and registries |
 | `config/policy.json` | Feasibility constants, normalization references, and score weights |
-| `config/runtime.yaml` | Controller-owned benchmark, validation, and continuous-monitor settings |
+| `config/runtime.yaml` | Controller-owned benchmark, validation, continuous-monitor, and closed-loop guard settings |
 | `examples/hello-intent-function.yaml` | Active user submission example |
 | `systemd/` | Persistent API and Prometheus port-forward service templates |
-| `tests/` | Controller unit tests |
 
 ## REST Quick Start
 
@@ -102,19 +103,15 @@ results/runs/<run-id>/status.json
 results/runs/<run-id>/orchestrator.log
 results/runs/<run-id>/decision.json
 results/runs/<run-id>/execution.json
+results/runs/<automatic-run-id>/control-loop-trigger.json
+results/runs/<root-run-id>/control-loop-events.jsonl
 results/runs/<run-id>/post-deployment/samples.jsonl
 results/runs/<run-id>/post-deployment/latest-summary.json
+results/runs/<run-id>/post-deployment/raw-metrics/metrics_<n>.csv
 ```
 
-## Tests
-
-From the repository root:
-
-```bash
-python3 -m unittest discover \
-  -s controller/tests \
-  -p 'test_*.py' \
-  -v
-```
+Persistent violations create a new run ID. Follow the value in
+`reevaluation_run_id` or inspect `control-loop-events.jsonl` to trace all
+generations from the initial placement.
 
 See [API.md](API.md) for the compact endpoint reference.

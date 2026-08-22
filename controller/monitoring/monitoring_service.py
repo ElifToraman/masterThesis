@@ -224,6 +224,20 @@ class MonitoringService:
             pod_metrics=pod_metrics,
         )
 
+    def collect_and_store_snapshot(self) -> MetricsSnapshot:
+        """Collect one snapshot and persist its VM/node/pod evidence.
+
+        The placement path uses the background monitoring loop, while the
+        post-deployment control loop calls this method directly. Keeping the
+        write here ensures both paths produce the same numbered CSV format.
+        """
+        snapshot = self.collect_snapshot()
+
+        if snapshot.node_metrics:
+            self._write_numbered_csv(snapshot)
+
+        return snapshot
+
     def _monitoring_loop(self) -> None:
         while not self._stop_event.is_set():
             loop_started_at = time.monotonic()

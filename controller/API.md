@@ -11,9 +11,9 @@ Controller operational parameters are deliberately separate:
 controller/config/runtime.yaml
 ```
 
-That file controls benchmark load, final invocation validation, and
-post-deployment monitoring. REST clients cannot change those experiment
-parameters inside their intent submission.
+That file controls benchmark load, final invocation validation,
+post-deployment monitoring, and automatic control-loop guards. REST clients
+cannot change those experiment parameters inside their intent submission.
 
 Start it on the controller VM:
 
@@ -61,8 +61,8 @@ Artifacts and the orchestrator log are stored under
 
 After successful deployment, the status response also contains
 `selected_cluster` and `function_url`. The API continuously invokes the
-selected `hello` URL and collects selected-cluster VM, node, and function-pod
-metrics. Read its sliding-window intent evaluation with:
+selected `hello` URL and collects VM, node, and pod metrics from every
+configured candidate cluster. Read its sliding-window intent evaluation with:
 
 ```bash
 curl \
@@ -75,10 +75,24 @@ Monitoring states are `warming-up`, `intent-satisfied`, `intent-violated`, and
 ```text
 controller/results/runs/<run-id>/post-deployment/samples.jsonl
 controller/results/runs/<run-id>/post-deployment/latest-summary.json
+controller/results/runs/<run-id>/post-deployment/raw-metrics/metrics_<n>.csv
 ```
 
 The latest successful deployment monitor is resumed when the API restarts.
-Monitoring reports violations but does not redeploy or migrate the function.
+When the configured number of consecutive windows is `intent-violated`, the
+API automatically submits the original intent as a correlated re-evaluation
+run. The new run benchmarks and evaluates every cluster, deploys and validates
+the selected placement, cleans non-selected clusters, and continues
+monitoring. If a different cluster is selected, this performs a migration.
+
+The parent monitoring response exposes `reevaluation_run_id`. The automatic
+run's status response contains `control_loop_trigger`. Evidence is stored in:
+
+```text
+controller/results/runs/<automatic-run-id>/control-loop-trigger.json
+controller/results/runs/<root-run-id>/control-loop-events.jsonl
+controller/results/control-loop-events.jsonl
+```
 
 Only one orchestration may run at a time. A second submission receives
 `409 Conflict`. This protects the shared cluster deployments and result

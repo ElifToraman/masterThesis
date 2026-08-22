@@ -23,3 +23,12 @@ postDeploymentMonitoring:
   windowSize: 10
   minimumSamples: 3
   requestTimeoutSeconds: 5
+
+# Closed-loop remediation is controller policy, not user intent. A violation
+# must persist across several overlapping monitoring windows before a fresh
+# benchmark/placement run is launched. The cooldown prevents rapid repeated
+# runs if no cluster can currently satisfy the intent.
+controlLoop:
+  enabled: true
+  consecutiveViolationWindows: 3
+  cooldownSeconds: 120

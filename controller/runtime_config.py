@@ -182,6 +182,7 @@ def load_runtime_config(
         payload,
         "postDeploymentMonitoring",
     )
+    control_loop = _require_section(payload, "controlLoop")
 
     _require_integer(
         benchmark,
@@ -271,10 +272,29 @@ def load_runtime_config(
             "postDeploymentMonitoring.windowSize"
         )
 
+    _require_boolean(
+        control_loop,
+        "enabled",
+        section="controlLoop",
+    )
+    _require_integer(
+        control_loop,
+        "consecutiveViolationWindows",
+        minimum=1,
+        section="controlLoop",
+    )
+    _require_number(
+        control_loop,
+        "cooldownSeconds",
+        minimum=0,
+        section="controlLoop",
+    )
+
     return {
         "benchmark": benchmark,
         "validation": validation,
         "postDeploymentMonitoring": monitoring,
+        "controlLoop": control_loop,
     }
 
 
@@ -337,6 +357,22 @@ def _require_integer(
     if value < minimum:
         raise RuntimeConfigError(
             f"{section}.{name} must be at least {minimum}"
+        )
+
+    return value
+
+
+def _require_boolean(
+    section_payload: dict[str, Any],
+    name: str,
+    *,
+    section: str,
+) -> bool:
+    value = section_payload.get(name)
+
+    if not isinstance(value, bool):
+        raise RuntimeConfigError(
+            f"{section}.{name} must be a boolean"
         )
 
     return value

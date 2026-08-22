@@ -6,6 +6,7 @@ import logging
 import subprocess
 import sys
 import threading
+import time
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -17,6 +18,7 @@ from urllib.parse import urlparse
 
 from controller.post_deployment_monitor import (
     PostDeploymentMonitor,
+    PostDeploymentSummary,
 )
 
 logger = logging.getLogger(__name__)
@@ -87,8 +89,16 @@ class OrchestrationManager:
         self._monitor_lock = threading.Lock()
         self._monitor: PostDeploymentMonitor | None = None
         self._monitored_run_id: str | None = None
+        self._control_loop_lock = threading.Lock()
+        self._event_lock = threading.Lock()
+        self._last_control_action_monotonic: float | None = None
 
-    def submit(self, raw_submission: bytes) -> OrchestrationStatus:
+    def submit(
+        self,
+        raw_submission: bytes,
+        *,
+        trigger: dict | None = None,
+    ) -> OrchestrationStatus:
         validate_hello_submission(raw_submission)
 
         with self._lock:
@@ -112,6 +122,12 @@ class OrchestrationManager:
             submitted_at=_now(),
         )
         self._write_status(status)
+
+        if trigger is not None:
+            self._write_json_atomic(
+                run_directory / "control-loop-trigger.json",
+                trigger,
+            )
 
         worker = threading.Thread(
             target=self._execute,
@@ -216,6 +232,22 @@ class OrchestrationManager:
             f"/v1/orchestrations/{status.run_id}/monitoring"
         )
         execution_file = Path(status.execution_file)
+        trigger_file = (
+            self.results_directory
+            / "runs"
+            / status.run_id
+            / "control-loop-trigger.json"
+        )
+
+        if trigger_file.is_file():
+            try:
+                payload["control_loop_trigger"] = json.loads(
+                    trigger_file.read_text(encoding="utf-8")
+                )
+            except json.JSONDecodeError:
+                payload["control_loop_trigger_error"] = (
+                    "control-loop-trigger.json is invalid"
+                )
 
         if execution_file.is_file():
             try:
@@ -298,6 +330,7 @@ class OrchestrationManager:
             error=error,
         )
         self._write_status(final)
+        self._finalize_control_loop_run(final)
 
         if (
             final.state == "succeeded"
@@ -315,6 +348,8 @@ class OrchestrationManager:
                     run_id,
                     monitoring_error,
                 )
+        elif final.state == "failed":
+            self._reset_current_monitor_violation_action()
 
         with self._lock:
             if self._active_run_id == run_id:
@@ -396,9 +431,13 @@ class OrchestrationManager:
         monitoring_properties = runtime_config[
             "postDeploymentMonitoring"
         ]
+        control_loop_properties = runtime_config["controlLoop"]
 
         monitoring_service = MonitoringService(
-            vms=[cluster.create_vm()],
+            vms=[
+                candidate.create_vm()
+                for candidate in clusters.values()
+            ],
             output_directory=(
                 run_directory
                 / "post-deployment"
@@ -411,7 +450,7 @@ class OrchestrationManager:
             cluster_name=cluster_name,
             url=str(execution["url"]),
             snapshot_collector=(
-                monitoring_service.collect_snapshot
+                monitoring_service.collect_and_store_snapshot
             ),
             output_directory=(
                 run_directory / "post-deployment"
@@ -440,6 +479,17 @@ class OrchestrationManager:
                     5,
                 )
             ),
+            candidate_cluster_names=list(clusters),
+            violation_handler=(
+                self._handle_intent_violation
+                if bool(control_loop_properties["enabled"])
+                else None
+            ),
+            consecutive_violation_windows=int(
+                control_loop_properties[
+                    "consecutiveViolationWindows"
+                ]
+            ),
         )
 
         with self._monitor_lock:
@@ -453,10 +503,280 @@ class OrchestrationManager:
         monitor.start()
         logger.info(
             "Continuous post-deployment monitoring started "
-            "for run %s on %s",
+            "for run %s on %s; candidate metrics: %s",
             run_id,
             cluster_name,
+            ", ".join(sorted(clusters)),
         )
+
+    def _handle_intent_violation(
+        self,
+        summary: PostDeploymentSummary,
+    ) -> str | None:
+        from controller.runtime_config import load_runtime_config
+
+        control_loop = load_runtime_config(
+            self.runtime_config_file
+        )["controlLoop"]
+
+        if not bool(control_loop["enabled"]):
+            return None
+
+        cooldown_seconds = float(
+            control_loop["cooldownSeconds"]
+        )
+
+        with self._control_loop_lock:
+            now_monotonic = time.monotonic()
+
+            if (
+                self._last_control_action_monotonic is not None
+                and now_monotonic
+                - self._last_control_action_monotonic
+                < cooldown_seconds
+            ):
+                return None
+
+            parent_status = self.get_status(summary.run_id)
+
+            if parent_status is None:
+                logger.error(
+                    "Cannot re-evaluate unknown run %s",
+                    summary.run_id,
+                )
+                return None
+
+            parent_trigger = self._read_control_loop_trigger(
+                summary.run_id
+            )
+            root_run_id = str(
+                parent_trigger.get("root_run_id", summary.run_id)
+                if parent_trigger is not None
+                else summary.run_id
+            )
+            generation = int(
+                parent_trigger.get("generation", 0)
+                if parent_trigger is not None
+                else 0
+            ) + 1
+            trigger = {
+                "timestamp": _now(),
+                "trigger": "intent-violation",
+                "state": "accepted",
+                "root_run_id": root_run_id,
+                "parent_run_id": summary.run_id,
+                "generation": generation,
+                "previous_cluster": summary.cluster_name,
+                "previous_url": summary.url,
+                "violation": {
+                    "timestamp": summary.timestamp,
+                    "state": summary.state,
+                    "window_size": summary.window_size,
+                    "success_rate": summary.success_rate,
+                    "average_latency_ms": (
+                        summary.average_latency_ms
+                    ),
+                    "p50_latency_ms": summary.p50_latency_ms,
+                    "p95_latency_ms": summary.p95_latency_ms,
+                    "consecutive_violation_windows": (
+                        summary.consecutive_violation_windows
+                    ),
+                    "objective_evaluations": [
+                        asdict(evaluation)
+                        for evaluation in (
+                            summary.objective_evaluations
+                        )
+                    ],
+                    "constraint_evaluations": [
+                        asdict(evaluation)
+                        for evaluation in (
+                            summary.constraint_evaluations
+                        )
+                    ],
+                },
+            }
+
+            raw_submission = Path(
+                parent_status.submission_file
+            ).read_bytes()
+
+            try:
+                reevaluation = self.submit(
+                    raw_submission,
+                    trigger=trigger,
+                )
+            except OrchestrationBusyError:
+                return None
+
+            self._last_control_action_monotonic = now_monotonic
+            event = {
+                "timestamp": _now(),
+                "event": "reevaluation-started",
+                "root_run_id": root_run_id,
+                "parent_run_id": summary.run_id,
+                "reevaluation_run_id": reevaluation.run_id,
+                "generation": generation,
+                "previous_cluster": summary.cluster_name,
+            }
+            self._append_control_loop_event(
+                root_run_id,
+                event,
+            )
+            logger.warning(
+                "Intent violation in run %s triggered automatic "
+                "re-evaluation run %s",
+                summary.run_id,
+                reevaluation.run_id,
+            )
+            return reevaluation.run_id
+
+    def _finalize_control_loop_run(
+        self,
+        status: OrchestrationStatus,
+    ) -> None:
+        trigger = self._read_control_loop_trigger(status.run_id)
+
+        if trigger is None:
+            return
+
+        previous_cluster = trigger.get("previous_cluster")
+        selected_cluster: str | None = None
+        function_url: str | None = None
+
+        if Path(status.execution_file).is_file():
+            try:
+                execution = json.loads(
+                    Path(status.execution_file).read_text(
+                        encoding="utf-8"
+                    )
+                )
+                selected_cluster = execution.get("cluster_name")
+                function_url = execution.get("url")
+            except json.JSONDecodeError:
+                pass
+
+        placement_changed = (
+            status.state == "succeeded"
+            and selected_cluster is not None
+            and selected_cluster != previous_cluster
+        )
+        outcome = (
+            "migrated"
+            if placement_changed
+            else (
+                "placement-retained"
+                if status.state == "succeeded"
+                else "reevaluation-failed"
+            )
+        )
+        trigger.update(
+            {
+                "finished_at": _now(),
+                "state": status.state,
+                "outcome": outcome,
+                "selected_cluster": selected_cluster,
+                "function_url": function_url,
+                "placement_changed": placement_changed,
+                "error": status.error,
+            }
+        )
+        self._write_json_atomic(
+            self.results_directory
+            / "runs"
+            / status.run_id
+            / "control-loop-trigger.json",
+            trigger,
+        )
+        self._append_control_loop_event(
+            str(trigger["root_run_id"]),
+            {
+                "timestamp": _now(),
+                "event": "reevaluation-finished",
+                "root_run_id": trigger["root_run_id"],
+                "parent_run_id": trigger["parent_run_id"],
+                "reevaluation_run_id": status.run_id,
+                "generation": trigger["generation"],
+                "previous_cluster": previous_cluster,
+                "selected_cluster": selected_cluster,
+                "placement_changed": placement_changed,
+                "outcome": outcome,
+                "error": status.error,
+            },
+        )
+
+    def _read_control_loop_trigger(
+        self,
+        run_id: str,
+    ) -> dict | None:
+        trigger_file = (
+            self.results_directory
+            / "runs"
+            / run_id
+            / "control-loop-trigger.json"
+        )
+
+        if not trigger_file.is_file():
+            return None
+
+        try:
+            value = json.loads(
+                trigger_file.read_text(encoding="utf-8")
+            )
+        except json.JSONDecodeError:
+            logger.exception(
+                "Invalid control-loop trigger for run %s",
+                run_id,
+            )
+            return None
+
+        return value if isinstance(value, dict) else None
+
+    def _append_control_loop_event(
+        self,
+        root_run_id: str,
+        event: dict,
+    ) -> None:
+        files = [
+            self.results_directory / "control-loop-events.jsonl",
+            self.results_directory
+            / "runs"
+            / root_run_id
+            / "control-loop-events.jsonl",
+        ]
+
+        with self._event_lock:
+            for output_file in files:
+                output_file.parent.mkdir(
+                    parents=True,
+                    exist_ok=True,
+                )
+
+                with output_file.open(
+                    "a",
+                    encoding="utf-8",
+                ) as file:
+                    json.dump(event, file)
+                    file.write("\n")
+
+    def _reset_current_monitor_violation_action(self) -> None:
+        with self._monitor_lock:
+            monitor = self._monitor
+
+        if monitor is not None:
+            monitor.reset_violation_action()
+
+    def _write_json_atomic(
+        self,
+        output_file: Path,
+        payload: dict,
+    ) -> None:
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+        temporary = output_file.with_suffix(".tmp")
+        temporary.write_text(
+            json.dumps(payload, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        temporary.replace(output_file)
 
     def _write_monitoring_failure(
         self,

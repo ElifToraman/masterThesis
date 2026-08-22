@@ -22,7 +22,9 @@ User submits hello function + intent through REST
   -> controller deploys hello as a Knative Service
   -> controller invokes and validates the final deployment
   -> controller removes hello from non-selected clusters
-  -> controller continuously monitors the selected deployment
+  -> controller continuously monitors the deployment and all candidates
+  -> persistent intent violation starts an automatic re-evaluation
+  -> controller retains or migrates the placement and continues monitoring
   -> user invokes the returned Knative URL
 ```
 
@@ -30,8 +32,12 @@ The controller selects a **cluster**. Kubernetes and Knative remain
 responsible for placing pods on nodes inside that cluster. This is the intended
 separation of responsibilities for the current thesis scope.
 
-Continuous monitoring currently detects and reports an intent violation. It
-does not yet automatically migrate the service to another cluster.
+The post-deployment controller is a closed loop. A persistent intent violation
+launches a correlated orchestration run using the original submission. That
+run collects fresh evidence, benchmarks all candidates, runs the placement
+policy, validates the chosen deployment, removes the non-selected copy, and
+starts the next monitoring generation. Consecutive-violation and cooldown
+guards prevent a single noisy sample from causing rapid oscillation.
 
 ## Testbed Architecture
 
@@ -48,7 +54,7 @@ Controller VM: 129.114.27.169
   |-- monitoring and benchmarking
   |-- decision policy
   |-- Knative deployer and execution validator
-  |-- continuous post-deployment monitor
+  |-- continuous monitor and automatic re-placement loop
   |
   | kubectl context + SSH + Prometheus
   +-------------------------> vm1-cluster
@@ -126,12 +132,10 @@ oriented.
 │   ├── examples/
 │   │   └── hello-intent-function.yaml
 │   ├── systemd/
-│   ├── tests/
 │   ├── API.md
 │   └── README.md
 └── hello/
     ├── function/
-    ├── tests/
     ├── Makefile
     └── func.yaml
 ```
@@ -247,7 +251,9 @@ This controller-owned file defines:
   sampling interval;
 - final invocation attempts, timeout, and retry interval;
 - post-deployment monitoring interval, window size, minimum samples, and
-  request timeout.
+  request timeout;
+- automatic-control enablement, consecutive violated-window threshold, and
+  cooldown between re-evaluation runs.
 
 This separation keeps the responsibilities clear:
 
@@ -307,6 +313,11 @@ accepted -> running -> succeeded
 submission, creates a run ID, and starts a background worker. That worker
 launches `controller.orchestrator` as a separate Python process and redirects
 its output into the run log.
+
+An automatically triggered re-evaluation is also an ordinary run with its own
+run ID and complete evidence. Its status response contains
+`control_loop_trigger`, including the root run, parent run, violation evidence,
+generation, previous cluster, selected cluster, and migration outcome.
 
 Only one orchestration may execute at once. A simultaneous second submission
 receives `409 Conflict`, preventing competing deployments from modifying the
@@ -547,11 +558,13 @@ selected deployment. At each interval it:
 
 1. invokes the live Knative URL;
 2. records status and response latency;
-3. collects selected-cluster VM, node, and pod metrics;
+3. collects VM, node, and pod metrics from every candidate cluster;
 4. adds the observation to a bounded sliding window;
 5. calculates success rate, average, p50, and p95 latency;
 6. re-evaluates supported objectives and constraints;
-7. persists the sample and latest summary.
+7. persists JSON evidence and a raw multi-cluster CSV snapshot;
+8. counts consecutive violated monitoring windows;
+9. triggers automatic re-evaluation when the configured threshold is met.
 
 Monitoring states:
 
@@ -563,9 +576,30 @@ Monitoring states:
 | `intent-violated` | At least one live evaluation fails |
 | `monitoring-failed` | The monitoring loop could not start |
 
+### 10. Automatic Re-evaluation and Migration
+
+When `intent-violated` persists for the configured number of windows, the API:
+
+1. copies the exact original `submission.yaml` into a new run;
+2. records the violation, root run, parent run, and placement generation;
+3. benchmarks every configured cluster again;
+4. collects a fresh placement-monitoring snapshot;
+5. runs the same feasibility, intent, and normalized scoring policy;
+6. deploys and validates the newly selected cluster;
+7. removes `hello` from every non-selected cluster;
+8. records `migrated`, `placement-retained`, or `reevaluation-failed`;
+9. starts a new monitor for the resulting placement.
+
+The old deployment stays active during benchmarking and decision-making. If
+the alternative is selected, it is deployed and validated before cleanup
+removes the old copy. If the current cluster remains the best candidate, the
+placement is retained. A failed automatic run leaves the previous monitor
+active and permits another guarded attempt after fresh violated windows and
+the cooldown period.
+
 When the API restarts, it finds the latest successful execution and resumes
 its monitor. Starting a newer successful run stops the previous monitor and
-monitors the new deployment.
+monitors the new deployment and all candidate clusters.
 
 ## Local Registries and Image Resolution
 
@@ -736,37 +770,32 @@ controller/results/runs/<run-id>/
 ├── orchestrator.log
 ├── decision.json
 ├── execution.json
+├── control-loop-trigger.json       # automatic runs only
+├── control-loop-events.jsonl       # root run only
 └── post-deployment/
     ├── samples.jsonl
     ├── latest-summary.json
     └── raw-metrics/
+        └── metrics_<index>.csv
 ```
 
 The run ID connects submission, benchmark, decision, deployment, execution,
-and monitoring evidence.
+and monitoring evidence. Global automatic-control history is appended to
+`controller/results/control-loop-events.jsonl`.
 
-## Running Tests
+## Verification
 
-From the repository root:
+Compile the controller from the repository virtual environment:
 
 ```bash
-python3 -m unittest discover \
-  -s controller/tests \
-  -p 'test_*.py' \
-  -v
+.venv/bin/python -m compileall -q controller
 ```
 
-The unit tests cover:
-
-- REST submission and status behaviour
-- rejection of simultaneous runs
-- benchmark calculations and failure handling
-- decision feasibility, freshness, weights, constraints, and scoring
-- execution validation
-- post-deployment sliding-window monitoring
-
-Unit tests use mocks and temporary directories where appropriate. They do not
-replace the live two-cluster experiment.
+The authoritative system verification is a live two-cluster run: submit the
+intent through REST, inspect both benchmark records and candidate scores,
+verify the selected Knative URL, inspect the multi-cluster monitoring CSVs,
+and induce a controlled intent violation to observe the correlated automatic
+run and its migration outcome.
 
 ## Implemented Design Improvements
 
@@ -786,13 +815,14 @@ The current controller addresses the main earlier prototype problems:
 | No live submission | Asynchronous REST API accepts YAML/JSON |
 | Port/API processes depended on a shell | systemd units provide restart and boot persistence |
 | No post-deployment view | Continuous sliding-window monitoring and REST reporting |
+| Violation only produced a report | Persistent violations trigger a fresh full placement run |
+| Only selected cluster was monitored after deployment | Every configured candidate is sampled and persisted |
+| Re-evaluation could oscillate | Consecutive-window and cooldown guards limit repeated actions |
 
 ## Current Limitations and Future Work
 
 The following are deliberately not yet implemented:
 
-- automatic migration or redeployment after `intent-violated`;
-- a full monitor-analyse-plan-execute remediation loop;
 - a controller-defined autoscaling algorithm beyond Knative annotations;
 - service-chain placement;
 - split placement across clusters;
@@ -803,21 +833,9 @@ The following are deliberately not yet implemented:
 - a database or distributed run queue;
 - learned or experimentally optimized policy weights.
 
-The next major control feature is:
-
-```text
-live monitor detects violation
-  -> collect fresh evidence
-  -> benchmark feasible alternative clusters
-  -> run placement policy again
-  -> migrate/redeploy if the expected improvement exceeds a threshold
-  -> validate new deployment
-  -> remove old deployment
-  -> continue monitoring
-```
-
-Migration should include hysteresis, cooldown, and minimum-improvement
-thresholds to avoid oscillation between clusters.
+The automatic control loop uses persistent-violation and cooldown guards. A
+future experimental extension can add a separately calibrated minimum score
+improvement threshold before migration.
 
 ## Related Documentation
 

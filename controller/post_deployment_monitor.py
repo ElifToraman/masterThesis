@@ -8,7 +8,7 @@ import time
 import urllib.error
 import urllib.request
 from collections import deque
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
@@ -32,6 +32,26 @@ COMPARATORS = {
 
 
 @dataclass(frozen=True)
+class ClusterMonitoringSample:
+    cluster_name: str
+    selected: bool
+    vm_reachable: bool
+    node_metrics_available: bool
+    node_count: int
+    worker_count: int
+    pod_count: int
+    function_pod_count: int
+    vm_cpu_usage_percent: float | None
+    vm_memory_usage_percent: float | None
+    vm_available_cpu_cores: float | None
+    vm_available_memory_bytes: int | None
+    average_worker_cpu_usage_percent: float | None
+    average_worker_memory_usage_percent: float | None
+    function_pod_cpu_millicores: float
+    function_pod_memory_bytes: int
+
+
+@dataclass(frozen=True)
 class PostDeploymentSample:
     timestamp: str
     run_id: str
@@ -48,6 +68,7 @@ class PostDeploymentSample:
     function_pod_count: int
     function_pod_cpu_millicores: float
     function_pod_memory_bytes: int
+    candidate_clusters: list[ClusterMonitoringSample]
 
 
 @dataclass(frozen=True)
@@ -82,9 +103,15 @@ class PostDeploymentSummary:
     objective_evaluations: list[ObjectiveEvaluation]
     constraint_evaluations: list[ObjectiveEvaluation]
     latest_sample: PostDeploymentSample | None
+    control_loop_enabled: bool
+    consecutive_violation_windows: int
+    required_violation_windows: int
+    reevaluation_triggered: bool
+    reevaluation_run_id: str | None
 
 
 SnapshotCollector = Callable[[], MetricsSnapshot]
+ViolationHandler = Callable[[PostDeploymentSummary], str | None]
 
 
 class PostDeploymentMonitor:
@@ -101,6 +128,9 @@ class PostDeploymentMonitor:
         window_size: int = 10,
         minimum_samples: int = 3,
         request_timeout_seconds: float = 5.0,
+        candidate_cluster_names: list[str] | None = None,
+        violation_handler: ViolationHandler | None = None,
+        consecutive_violation_windows: int = 3,
     ) -> None:
         if interval_seconds <= 0:
             raise ValueError(
@@ -111,6 +141,10 @@ class PostDeploymentMonitor:
         if not 1 <= minimum_samples <= window_size:
             raise ValueError(
                 "minimum_samples must be between 1 and window_size"
+            )
+        if consecutive_violation_windows <= 0:
+            raise ValueError(
+                "consecutive_violation_windows must be positive"
             )
 
         self.run_id = run_id
@@ -123,6 +157,13 @@ class PostDeploymentMonitor:
         self.window_size = window_size
         self.minimum_samples = minimum_samples
         self.request_timeout_seconds = request_timeout_seconds
+        self.candidate_cluster_names = sorted(
+            set(candidate_cluster_names or [cluster_name])
+        )
+        self.violation_handler = violation_handler
+        self.consecutive_violation_windows = (
+            consecutive_violation_windows
+        )
 
         self.output_directory.mkdir(
             parents=True,
@@ -134,6 +175,10 @@ class PostDeploymentMonitor:
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
+        self._action_lock = threading.Lock()
+        self._consecutive_violations = 0
+        self._reevaluation_triggered = False
+        self._reevaluation_run_id: str | None = None
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -185,8 +230,21 @@ class PostDeploymentMonitor:
             )
 
         self._append_sample(sample)
+        summary = self._handle_control_loop(summary)
         self._write_summary(summary)
         return summary
+
+    def reset_violation_action(self) -> None:
+        """Allow a persistent violation to trigger another evaluation.
+
+        The manager calls this when an automatically triggered orchestration
+        fails. The still-running monitor can then collect a fresh sequence of
+        violated windows and retry after the configured cooldown.
+        """
+        with self._action_lock:
+            self._consecutive_violations = 0
+            self._reevaluation_triggered = False
+            self._reevaluation_run_id = None
 
     def _loop(self) -> None:
         while not self._stop_event.is_set():
@@ -269,6 +327,7 @@ class PostDeploymentMonitor:
         snapshot_error: str | None,
     ) -> PostDeploymentSample:
         succeeded, status, latency, invocation_error = invocation
+        candidate_clusters = self._cluster_samples(snapshot)
         vm = (
             snapshot.vm_metrics.get(self.cluster_name)
             if snapshot is not None
@@ -341,7 +400,134 @@ class PostDeploymentMonitor:
             function_pod_memory_bytes=sum(
                 pod.memory_usage_bytes for pod in pods
             ),
+            candidate_clusters=candidate_clusters,
         )
+
+    def _cluster_samples(
+        self,
+        snapshot: MetricsSnapshot | None,
+    ) -> list[ClusterMonitoringSample]:
+        samples: list[ClusterMonitoringSample] = []
+
+        for cluster_name in self.candidate_cluster_names:
+            vm = (
+                snapshot.vm_metrics.get(cluster_name)
+                if snapshot is not None
+                else None
+            )
+            nodes = (
+                [
+                    node
+                    for node in snapshot.node_metrics.values()
+                    if node.cluster_name == cluster_name
+                ]
+                if snapshot is not None
+                else []
+            )
+            worker_nodes = [
+                node
+                for node in nodes
+                if node.node_role.lower()
+                not in {"control-plane", "master"}
+            ]
+            schedulable_nodes = worker_nodes or nodes
+            pods = (
+                [
+                    pod
+                    for pod in snapshot.pod_metrics.values()
+                    if pod.cluster_name == cluster_name
+                ]
+                if snapshot is not None
+                else []
+            )
+            function_pods = [
+                pod
+                for pod in pods
+                if pod.namespace
+                == self.submission.function.namespace
+                and pod.pod_name.startswith(
+                    self.submission.function.service_name
+                )
+                and "-benchmark" not in pod.pod_name
+            ]
+            available_cpu: float | None = None
+
+            if vm is not None:
+                available_cpu = max(
+                    0.0,
+                    vm.cpu_core_count
+                    * (1.0 - vm.cpu_usage_percent / 100.0),
+                )
+
+            samples.append(
+                ClusterMonitoringSample(
+                    cluster_name=cluster_name,
+                    selected=cluster_name == self.cluster_name,
+                    vm_reachable=vm is not None,
+                    node_metrics_available=bool(nodes),
+                    node_count=len(nodes),
+                    worker_count=len(worker_nodes),
+                    pod_count=len(pods),
+                    function_pod_count=len(function_pods),
+                    vm_cpu_usage_percent=(
+                        vm.cpu_usage_percent
+                        if vm is not None
+                        else None
+                    ),
+                    vm_memory_usage_percent=(
+                        vm.memory_usage_percent
+                        if vm is not None
+                        else None
+                    ),
+                    vm_available_cpu_cores=(
+                        round(available_cpu, 4)
+                        if available_cpu is not None
+                        else None
+                    ),
+                    vm_available_memory_bytes=(
+                        vm.memory_available_bytes
+                        if vm is not None
+                        else None
+                    ),
+                    average_worker_cpu_usage_percent=(
+                        round(
+                            sum(
+                                node.cpu_usage_percent
+                                for node in schedulable_nodes
+                            )
+                            / len(schedulable_nodes),
+                            4,
+                        )
+                        if schedulable_nodes
+                        else None
+                    ),
+                    average_worker_memory_usage_percent=(
+                        round(
+                            sum(
+                                node.memory_usage_percent
+                                for node in schedulable_nodes
+                            )
+                            / len(schedulable_nodes),
+                            4,
+                        )
+                        if schedulable_nodes
+                        else None
+                    ),
+                    function_pod_cpu_millicores=round(
+                        sum(
+                            pod.cpu_usage_millicores
+                            for pod in function_pods
+                        ),
+                        4,
+                    ),
+                    function_pod_memory_bytes=sum(
+                        pod.memory_usage_bytes
+                        for pod in function_pods
+                    ),
+                )
+            )
+
+        return samples
 
     def _build_summary(
         self,
@@ -461,7 +647,68 @@ class PostDeploymentMonitor:
             objective_evaluations=objectives,
             constraint_evaluations=constraints,
             latest_sample=samples[-1] if samples else None,
+            control_loop_enabled=self.violation_handler is not None,
+            consecutive_violation_windows=0,
+            required_violation_windows=(
+                self.consecutive_violation_windows
+            ),
+            reevaluation_triggered=False,
+            reevaluation_run_id=None,
         )
+
+    def _handle_control_loop(
+        self,
+        summary: PostDeploymentSummary,
+    ) -> PostDeploymentSummary:
+        if self.violation_handler is None:
+            return summary
+
+        with self._action_lock:
+            if summary.state == "intent-violated":
+                self._consecutive_violations += 1
+            elif not self._reevaluation_triggered:
+                self._consecutive_violations = 0
+
+            should_trigger = (
+                summary.state == "intent-violated"
+                and self._consecutive_violations
+                >= self.consecutive_violation_windows
+                and not self._reevaluation_triggered
+            )
+
+            if should_trigger:
+                callback_summary = replace(
+                    summary,
+                    consecutive_violation_windows=(
+                        self._consecutive_violations
+                    ),
+                )
+
+                try:
+                    reevaluation_run_id = self.violation_handler(
+                        callback_summary
+                    )
+                except Exception:
+                    logger.exception(
+                        "Intent-violation handler failed for run %s",
+                        self.run_id,
+                    )
+                    reevaluation_run_id = None
+
+                if reevaluation_run_id is not None:
+                    self._reevaluation_triggered = True
+                    self._reevaluation_run_id = reevaluation_run_id
+
+            return replace(
+                summary,
+                consecutive_violation_windows=(
+                    self._consecutive_violations
+                ),
+                reevaluation_triggered=(
+                    self._reevaluation_triggered
+                ),
+                reevaluation_run_id=self._reevaluation_run_id,
+            )
 
     def _evaluate(
         self,

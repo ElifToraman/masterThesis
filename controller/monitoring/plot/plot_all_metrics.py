@@ -21,7 +21,7 @@ METRICS = {
     "load_average_15m": "Load average (15 minutes)",
     "network_receive_bytes_per_second": "Network receive (KiB/s)",
     "network_transmit_bytes_per_second": "Network transmit (KiB/s)",
-    "latency"
+    "latency": "Collection latency (ms)",
 }
 
 BYTE_COLUMNS = {
