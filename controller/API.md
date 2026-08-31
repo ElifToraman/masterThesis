@@ -94,6 +94,22 @@ controller/results/runs/<root-run-id>/control-loop-events.jsonl
 controller/results/control-loop-events.jsonl
 ```
 
+For a repeatable supervisor demonstration, first submit normally through the
+REST API, wait for success, and then run this on the controller VM:
+
+```bash
+python3 -m controller.scripts.run_control_loop_experiment \
+  --parent-run-id <successful-run-id> \
+  --workers 8 \
+  --function-load-concurrency 4 \
+  --function-work 8 \
+  --duration-seconds 240 \
+  --require-migration
+```
+
+This records the controlled external workload and follows the automatic run;
+it does not bypass the REST API or override the placement policy.
+
 Only one orchestration may run at a time. A second submission receives
 `409 Conflict`. This protects the shared cluster deployments and result
 files.

@@ -42,7 +42,7 @@ REST IntentFunction submission
 | `image_resolver.py` | Maps the logical image to each local edge registry |
 | `benchmarking/` | Temporary Knative deployment, concurrent load generation, resource sampling, and JSONL persistence |
 | `monitoring/` | SSH physical-VM metrics and Prometheus node/pod metrics |
-| `scripts/` | Executable orchestration stages |
+| `scripts/` | Executable orchestration stages and the reproducible closed-loop experiment runner |
 | `config/clusters.yaml` | Cluster contexts, hosts, Prometheus endpoints, and registries |
 | `config/policy.json` | Feasibility constants, normalization references, and score weights |
 | `config/runtime.yaml` | Controller-owned benchmark, validation, continuous-monitor, and closed-loop guard settings |
@@ -94,6 +94,49 @@ curl -s \
 
 After success, invoke the returned `function_url` directly from the Mac.
 
+## Reproducible Closed-Loop Experiment
+
+Keep the initial REST submission as a client action: submit from the Mac and
+wait until its state is `succeeded`. Then SSH to the controller VM and attach
+the controlled experiment to that parent run:
+
+```bash
+cd ~/masterThesis
+
+PARENT_RUN_ID="paste-successful-run-id-here"
+
+python3 -m controller.scripts.run_control_loop_experiment \
+  --parent-run-id "$PARENT_RUN_ID" \
+  --workers 8 \
+  --function-load-concurrency 4 \
+  --function-work 8 \
+  --duration-seconds 240 \
+  --require-migration
+```
+
+The runner reads the parent placement, applies bounded CPU contention to that
+physical edge VM over SSH, and sends bounded concurrent CPU-work requests to
+the selected `hello` URL. It watches the live monitoring endpoint, follows
+the automatically created reevaluation run, stops both workloads, and waits
+for the new monitor. It does not choose or force the destination cluster; the
+normal decision policy still decides whether placement is migrated or
+retained.
+
+Each invocation records both exact workload commands, targets, UTC
+timestamps, durations, concurrency and worker settings, monitoring
+observations, reevaluation run ID, final status, placement outcome, and
+recovery observation under:
+
+```text
+results/runs/<parent-run-id>/experiments/<experiment-id>/experiment.json
+results/runs/<parent-run-id>/experiments/<experiment-id>/observations.jsonl
+```
+
+`--require-migration` makes the command return a non-zero status when the
+closed loop works but the policy legitimately retains the same cluster. Omit
+that option when the experiment is intended to demonstrate reevaluation
+rather than require a changed placement.
+
 ## Evidence
 
 ```text
@@ -108,6 +151,8 @@ results/runs/<root-run-id>/control-loop-events.jsonl
 results/runs/<run-id>/post-deployment/samples.jsonl
 results/runs/<run-id>/post-deployment/latest-summary.json
 results/runs/<run-id>/post-deployment/raw-metrics/metrics_<n>.csv
+results/runs/<parent-run-id>/experiments/<experiment-id>/experiment.json
+results/runs/<parent-run-id>/experiments/<experiment-id>/observations.jsonl
 ```
 
 Persistent violations create a new run ID. Follow the value in

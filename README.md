@@ -706,6 +706,55 @@ curl -s \
 The first state may be `warming-up`. Check again after the configured minimum
 number of samples.
 
+### Controller VM: run a reproducible violation experiment
+
+The initial submission remains a manual REST client action. After that run is
+`succeeded`, SSH to the controller VM and give its run ID to the experiment
+runner:
+
+```bash
+ssh -i ~/.ssh/chameleon_new cc@129.114.27.169
+cd ~/masterThesis
+
+PARENT_RUN_ID="paste-successful-run-id-here"
+
+python3 -m controller.scripts.run_control_loop_experiment \
+  --parent-run-id "$PARENT_RUN_ID" \
+  --workers 8 \
+  --function-load-concurrency 4 \
+  --function-work 8 \
+  --duration-seconds 240 \
+  --require-migration
+```
+
+The script discovers which cluster the parent run selected and creates
+bounded CPU contention on that physical edge VM. In parallel it sends
+bounded concurrent requests to `hello?work=8`, making the function itself
+perform CPU work so the ordinary monitor probes experience reproducible
+latency contention. It then observes, rather than replaces, the normal
+closed-loop behavior: live probes violate the intent, the API creates a
+correlated reevaluation run, both candidates are benchmarked again, and the
+policy either migrates or retains placement. The script stops both workloads
+safely and records their exact commands and the experiment timeline under:
+
+```text
+controller/results/runs/<parent-run-id>/experiments/<experiment-id>/experiment.json
+controller/results/runs/<parent-run-id>/experiments/<experiment-id>/observations.jsonl
+```
+
+The record contains the stress target, UTC start and finish times, host worker
+count, function concurrency and work value, duration, exact commands,
+monitoring observations, automatic reevaluation run ID, final selected
+cluster, migration outcome, and recovery monitoring result. The script does
+not force VM1 or VM2; cluster selection remains the responsibility of the
+decision policy.
+
+Stopping the temporary workload does not itself trigger a move back. The
+controller initiates placement reevaluation only when the current placement
+violates its intent for the configured consecutive windows. If the migrated
+placement continues satisfying the intent, it stays there. This behavior
+avoids unnecessary migrations and oscillation.
+
 Stop only the Mac tunnel with `Ctrl+C` in Terminal 1. This does not stop the
 controller API, monitoring service, or deployed function.
 
