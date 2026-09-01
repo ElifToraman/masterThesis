@@ -97,6 +97,15 @@ def main(argv: list[str] | None = None) -> None:
         )
     print(f"Orchestration run ID: {run_id}")
 
+    placement_snapshot_file = (
+        Path(__file__).resolve().parent
+        / "results"
+        / "runs"
+        / run_id
+        / "placement-monitoring"
+        / "snapshot.json"
+    )
+
     common_arguments = [
         "--submission",
         str(submission_file),
@@ -119,6 +128,19 @@ def main(argv: list[str] | None = None) -> None:
     )
 
     run_step(
+        "Collect placement monitoring snapshot",
+        [
+            sys.executable,
+            "-m",
+            "controller.scripts.collect_placement_metrics",
+            "--cluster-config",
+            str(cluster_config_file),
+            "--run-id",
+            run_id,
+        ],
+    )
+
+    run_step(
         "Select best cluster",
         [
             sys.executable,
@@ -127,6 +149,8 @@ def main(argv: list[str] | None = None) -> None:
             *common_arguments,
             "--policy-config",
             str(policy_config_file),
+            "--monitoring-snapshot",
+            str(placement_snapshot_file),
         ],
     )
 

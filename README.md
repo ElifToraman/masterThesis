@@ -123,8 +123,10 @@ oriented.
 │   ├── intent_function_parser.py
 │   ├── benchmarking/
 │   ├── monitoring/
+│   │   └── snapshot_repository.py
 │   ├── models/
 │   ├── scripts/
+│   │   └── collect_placement_metrics.py
 │   ├── config/
 │   │   ├── clusters.yaml
 │   │   ├── policy.json
@@ -230,6 +232,7 @@ This includes:
 
 - minimum acceptable benchmark success rate
 - maximum benchmark age
+- maximum placement-monitoring snapshot age
 - default CPU and memory requirement
 - CPU and memory safety factors
 - cold-start and deployment normalization references
@@ -343,6 +346,7 @@ same clusters.
 
 ```text
 controller.scripts.run_benchmark
+controller.scripts.collect_placement_metrics
 controller.scripts.run_decision_policy
 controller.scripts.deploy_selected
 controller.scripts.cleanup_non_selected
@@ -393,9 +397,20 @@ controller/results/benchmarks.jsonl
 Each record carries the orchestration run ID, function version, cluster, and
 resolved image reference.
 
-### 4. Monitoring
+### 4. Placement Monitoring
 
-The controller collects a coherent `MetricsSnapshot` for every candidate.
+The controller runs `controller.scripts.collect_placement_metrics` as an
+explicit orchestration stage. It collects one coherent `MetricsSnapshot` for
+every candidate and persists the exact decision input under the current run:
+
+```text
+controller/results/runs/<run-id>/placement-monitoring/snapshot.json
+controller/results/runs/<run-id>/placement-monitoring/raw-metrics/metrics_<index>.csv
+```
+
+The JSON snapshot carries its schema version, run ID and timestamp. The
+decision stage rejects a snapshot from another run, an unsupported schema, a
+snapshot without node metrics, or one older than the configured maximum.
 
 #### Physical VM metrics
 
@@ -448,6 +463,11 @@ These metrics describe current workloads and the resource behaviour of
 - fresh benchmark records for the same run and expected image;
 - resource requirements and safety factors;
 - configurable normalized scoring weights.
+
+`controller.scripts.run_decision_policy` only loads and evaluates the
+persisted placement snapshot; it no longer starts a monitoring service. This
+makes monitoring and decision-making separate, independently inspectable
+orchestration stages.
 
 #### Benchmark validity
 
@@ -817,6 +837,10 @@ controller/results/runs/<run-id>/
 ├── submission.yaml
 ├── status.json
 ├── orchestrator.log
+├── placement-monitoring/
+│   ├── snapshot.json
+│   └── raw-metrics/
+│       └── metrics_<index>.csv
 ├── decision.json
 ├── execution.json
 ├── control-loop-trigger.json       # automatic runs only
@@ -867,6 +891,7 @@ The current controller addresses the main earlier prototype problems:
 | Violation only produced a report | Persistent violations trigger a fresh full placement run |
 | Only selected cluster was monitored after deployment | Every configured candidate is sampled and persisted |
 | Re-evaluation could oscillate | Consecutive-window and cooldown guards limit repeated actions |
+| Placement monitoring was hidden inside the decision wrapper | A run-specific collection stage persists and validates the exact snapshot before policy evaluation |
 
 ## Current Limitations and Future Work
 

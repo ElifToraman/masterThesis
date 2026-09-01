@@ -8,7 +8,9 @@ from controller.decision_policy import (
     write_decision,
 )
 from controller.image_resolver import resolve_image_for_registry
-from controller.monitoring.monitoring_service import MonitoringService
+from controller.monitoring.snapshot_repository import (
+    load_metrics_snapshot,
+)
 from controller.runtime_config import (
     DEFAULT_CLUSTER_CONFIG_FILE,
     DEFAULT_POLICY_CONFIG_FILE,
@@ -38,7 +40,16 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument(
         "--run-id",
+        required=True,
+    )
+    parser.add_argument(
+        "--monitoring-snapshot",
+        type=Path,
         default=None,
+        help=(
+            "Run-specific placement monitoring snapshot. Defaults to "
+            "results/runs/<run-id>/placement-monitoring/snapshot.json."
+        ),
     )
     args = parser.parse_args(argv)
 
@@ -46,137 +57,114 @@ def main(argv: list[str] | None = None) -> None:
     submission = load_submission(args.submission)
     clusters = load_cluster_configs(args.cluster_config)
     policy_config = load_policy_config(args.policy_config)
-
-    monitoring = MonitoringService(
-        vms=[
-            cluster.create_vm()
-            for cluster in clusters.values()
-        ],
-        collection_interval_seconds=10,
-        output_directory=(
+    snapshot_file = (
+        args.monitoring_snapshot.expanduser().resolve()
+        if args.monitoring_snapshot is not None
+        else (
             controller_directory
-            / "monitoring"
-            / "metrics"
+            / "results"
+            / "runs"
+            / args.run_id
+            / "placement-monitoring"
+            / "snapshot.json"
+        )
+    )
+    snapshot = load_metrics_snapshot(
+        input_file=snapshot_file,
+        expected_run_id=args.run_id,
+        maximum_age_seconds=float(
+            policy_config.get(
+                "maximumMonitoringSnapshotAgeSeconds",
+                120,
+            )
         ),
     )
 
-    monitoring.start()
+    policy = DecisionPolicy(
+        benchmark_file=(controller_directory / "results" / "benchmarks.jsonl"),
+        expected_run_id=args.run_id,
+        expected_images={
+            name: resolve_image_for_registry(
+                image=submission.function.image,
+                registry=cluster.image_registry,
+            )
+            for name, cluster in clusters.items()
+        },
+        minimum_success_rate=float(
+            policy_config["minimumBenchmarkSuccessRate"]
+        ),
+        maximum_benchmark_age_seconds=float(
+            policy_config["maximumBenchmarkAgeSeconds"]
+        ),
+        default_required_cpu_cores=float(
+            policy_config["defaultRequiredCpuCores"]
+        ),
+        default_required_memory_bytes=int(
+            float(policy_config["defaultRequiredMemoryMiB"]) * 1024**2
+        ),
+        cpu_safety_factor=float(policy_config["cpuSafetyFactor"]),
+        memory_safety_factor=float(policy_config["memorySafetyFactor"]),
+        scoring_weights={
+            str(name): float(weight)
+            for name, weight in policy_config["scoringWeights"].items()
+        },
+        cold_start_reference_ms=float(policy_config["coldStartReferenceMs"]),
+        deployment_reference_ms=float(policy_config["deploymentReferenceMs"]),
+    )
 
-    try:
-        snapshot = monitoring.wait_for_first_snapshot(
-            timeout_seconds=60,
-        )
+    decision = policy.decide(
+        submission=submission,
+        snapshot=snapshot,
+    )
 
-        policy = DecisionPolicy(
-            benchmark_file=(
-                controller_directory
-                / "results"
-                / "benchmarks.jsonl"
-            ),
-            expected_run_id=args.run_id,
-            expected_images={
-                name: resolve_image_for_registry(
-                    image=submission.function.image,
-                    registry=cluster.image_registry,
-                )
-                for name, cluster in clusters.items()
-            },
-            minimum_success_rate=float(
-                policy_config["minimumBenchmarkSuccessRate"]
-            ),
-            maximum_benchmark_age_seconds=float(
-                policy_config["maximumBenchmarkAgeSeconds"]
-            ),
-            default_required_cpu_cores=float(
-                policy_config["defaultRequiredCpuCores"]
-            ),
-            default_required_memory_bytes=int(
-                float(
-                    policy_config[
-                        "defaultRequiredMemoryMiB"
-                    ]
-                )
-                * 1024**2
-            ),
-            cpu_safety_factor=float(
-                policy_config["cpuSafetyFactor"]
-            ),
-            memory_safety_factor=float(
-                policy_config["memorySafetyFactor"]
-            ),
-            scoring_weights={
-                str(name): float(weight)
-                for name, weight in policy_config[
-                    "scoringWeights"
-                ].items()
-            },
-            cold_start_reference_ms=float(
-                policy_config["coldStartReferenceMs"]
-            ),
-            deployment_reference_ms=float(
-                policy_config["deploymentReferenceMs"]
-            ),
-        )
+    output_file = (
+        controller_directory / "results" / "decisions" / "latest-decision.json"
+    )
 
-        decision = policy.decide(
-            submission=submission,
-            snapshot=snapshot,
-        )
+    write_decision(
+        decision=decision,
+        output_file=output_file,
+    )
 
-        output_file = (
+    write_decision(
+        decision=decision,
+        output_file=(
             controller_directory
             / "results"
-            / "decisions"
-            / "latest-decision.json"
+            / "runs"
+            / args.run_id
+            / "decision.json"
+        ),
+    )
+
+    print(f"Monitoring snapshot: {snapshot_file}")
+    print(f"Decision mode: {decision.decision_mode}")
+    print(f"Selected cluster: {decision.selected_cluster}")
+    print(f"Reason: {decision.reason}")
+    print(f"Decision file: {output_file}")
+
+    print()
+    print("Candidates:")
+
+    for candidate in decision.candidates:
+        print(
+            "-",
+            candidate.cluster_name,
+            "feasible=",
+            candidate.feasible,
+            "intent_satisfied=",
+            candidate.intent_satisfied,
+            "p95=",
+            candidate.benchmark_p95_latency_ms,
+            "available_cpu=",
+            candidate.available_cpu_cores,
+            "available_memory_mb=",
+            round(candidate.available_memory_bytes / 1024 / 1024, 2),
+            "score=",
+            candidate.score,
+            "rejections=",
+            candidate.rejection_reasons,
         )
-
-        write_decision(
-            decision=decision,
-            output_file=output_file,
-        )
-
-        if args.run_id:
-            write_decision(
-                decision=decision,
-                output_file=(
-                    controller_directory
-                    / "results"
-                    / "runs"
-                    / args.run_id
-                    / "decision.json"
-                ),
-            )
-
-        print(f"Decision mode: {decision.decision_mode}")
-        print(f"Selected cluster: {decision.selected_cluster}")
-        print(f"Reason: {decision.reason}")
-        print(f"Decision file: {output_file}")
-
-        print()
-        print("Candidates:")
-
-        for candidate in decision.candidates:
-            print(
-                "-",
-                candidate.cluster_name,
-                "feasible=",
-                candidate.feasible,
-                "intent_satisfied=",
-                candidate.intent_satisfied,
-                "p95=",
-                candidate.benchmark_p95_latency_ms,
-                "available_cpu=",
-                candidate.available_cpu_cores,
-                "available_memory_mb=",
-                round(candidate.available_memory_bytes / 1024 / 1024, 2),
-                "score=",
-                candidate.score,
-                "rejections=",
-                candidate.rejection_reasons,
-            )
-
-    finally:
-        monitoring.stop()
 
 
 if __name__ == "__main__":

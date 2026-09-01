@@ -55,6 +55,7 @@ class OrchestrationStatus:
     error: str | None
     submission_file: str
     log_file: str
+    placement_monitoring_snapshot_file: str
     decision_file: str
     execution_file: str
     monitoring_summary_file: str
@@ -158,6 +159,16 @@ class OrchestrationManager:
         try:
             payload = json.loads(
                 status_file.read_text(encoding="utf-8")
+            )
+            payload.setdefault(
+                "placement_monitoring_snapshot_file",
+                str(
+                    self.results_directory
+                    / "runs"
+                    / run_id
+                    / "placement-monitoring"
+                    / "snapshot.json"
+                ),
             )
             payload.setdefault(
                 "monitoring_summary_file",
@@ -852,6 +863,11 @@ class OrchestrationManager:
             ),
             log_file=str(
                 run_directory / "orchestrator.log"
+            ),
+            placement_monitoring_snapshot_file=str(
+                run_directory
+                / "placement-monitoring"
+                / "snapshot.json"
             ),
             decision_file=str(
                 run_directory / "decision.json"

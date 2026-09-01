@@ -1,6 +1,7 @@
 {
   "minimumBenchmarkSuccessRate": 0.95,
   "maximumBenchmarkAgeSeconds": 300,
+  "maximumMonitoringSnapshotAgeSeconds": 120,
   "defaultRequiredCpuCores": 0.25,
   "defaultRequiredMemoryMiB": 128,
   "cpuSafetyFactor": 1.25,

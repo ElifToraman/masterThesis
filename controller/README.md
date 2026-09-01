@@ -32,7 +32,7 @@ REST IntentFunction submission
 | File | Responsibility |
 |---|---|
 | `api_service.py` | REST endpoints, asynchronous runs, monitor lifecycle, violation-triggered runs, migration evidence and recovery |
-| `orchestrator.py` | Runs benchmark, decision, deployment, and cleanup stages |
+| `orchestrator.py` | Runs benchmark, placement monitoring, decision, deployment, and cleanup stages |
 | `decision_policy.py` | Feasibility, intent evaluation, normalized weighted scoring, and placement |
 | `deployer.py` | Builds and applies the Knative Service and waits for readiness |
 | `execution_validator.py` | Invokes the final URL and writes execution evidence |
@@ -41,7 +41,8 @@ REST IntentFunction submission
 | `intent_function_parser.py` | Parses and validates YAML/JSON IntentFunction documents |
 | `image_resolver.py` | Maps the logical image to each local edge registry |
 | `benchmarking/` | Temporary Knative deployment, concurrent load generation, resource sampling, and JSONL persistence |
-| `monitoring/` | SSH physical-VM metrics and Prometheus node/pod metrics |
+| `monitoring/` | SSH physical-VM metrics, Prometheus node/pod metrics, and typed snapshot persistence |
+| `scripts/collect_placement_metrics.py` | Collects one run-specific snapshot before the decision stage |
 | `scripts/` | Executable orchestration stages and the reproducible closed-loop experiment runner |
 | `config/clusters.yaml` | Cluster contexts, hosts, Prometheus endpoints, and registries |
 | `config/policy.json` | Feasibility constants, normalization references, and score weights |
@@ -144,6 +145,8 @@ results/benchmarks.jsonl
 results/runs/<run-id>/submission.yaml
 results/runs/<run-id>/status.json
 results/runs/<run-id>/orchestrator.log
+results/runs/<run-id>/placement-monitoring/snapshot.json
+results/runs/<run-id>/placement-monitoring/raw-metrics/metrics_<index>.csv
 results/runs/<run-id>/decision.json
 results/runs/<run-id>/execution.json
 results/runs/<automatic-run-id>/control-loop-trigger.json

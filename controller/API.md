@@ -59,6 +59,18 @@ Possible states are `accepted`, `running`, `succeeded`, and `failed`.
 Artifacts and the orchestrator log are stored under
 `controller/results/runs/<run-id>/`.
 
+Before making the decision, the orchestration runs an explicit placement
+monitoring stage. Its exact decision input is stored as:
+
+```text
+controller/results/runs/<run-id>/placement-monitoring/snapshot.json
+controller/results/runs/<run-id>/placement-monitoring/raw-metrics/metrics_<index>.csv
+```
+
+The decision stage validates the snapshot schema, run ID, timestamp and node
+metrics before using it. The orchestration status response exposes the path as
+`placement_monitoring_snapshot_file`.
+
 After successful deployment, the status response also contains
 `selected_cluster` and `function_url`. The API continuously invokes the
 selected `hello` URL and collects VM, node, and pod metrics from every
