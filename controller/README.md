@@ -47,8 +47,17 @@ REST IntentFunction submission
 | `config/clusters.yaml` | Cluster contexts, hosts, Prometheus endpoints, and registries |
 | `config/policy.json` | Feasibility constants, normalization references, and score weights |
 | `config/runtime.yaml` | Controller-owned benchmark, validation, continuous-monitor, and closed-loop guard settings |
+| `config/knative-autoscaling-policy.json` | Common platform-level replica bounds for reproducible experiments |
 | `examples/hello-intent-function.yaml` | Active user submission example |
 | `systemd/` | Persistent API and Prometheus port-forward service templates |
+
+Preview or apply the common Knative autoscaling policy on every configured
+cluster from the controller VM:
+
+```bash
+python3 -m controller.scripts.configure_knative_autoscaling
+python3 -m controller.scripts.configure_knative_autoscaling --apply
+```
 
 ## REST Quick Start
 

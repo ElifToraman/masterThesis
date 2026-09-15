@@ -1071,13 +1071,7 @@ def validate_hello_submission(raw_submission: bytes) -> None:
         submission = parse_intent_function_payload(
             raw_submission
         )
-    except (
-        UnicodeDecodeError,
-        KeyError,
-        TypeError,
-        ValueError,
-        IntentFunctionParseError,
-    ) as error:
+    except IntentFunctionParseError as error:
         raise SubmissionValidationError(
             f"Invalid IntentFunction submission: {error}"
         ) from error

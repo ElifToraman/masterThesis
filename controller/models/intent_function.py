@@ -81,11 +81,64 @@ class Objective:
 
 
 @dataclass(frozen=True)
+class IntentProperties:
+    min_scale: int | None = None
+    max_scale: int | None = None
+    container_port: int = 8080
+
+    def __post_init__(self) -> None:
+        if (
+            self.min_scale is not None
+            and (
+                isinstance(self.min_scale, bool)
+                or not isinstance(self.min_scale, int)
+            )
+        ):
+            raise ValueError("minScale must be an integer")
+
+        if (
+            self.max_scale is not None
+            and (
+                isinstance(self.max_scale, bool)
+                or not isinstance(self.max_scale, int)
+            )
+        ):
+            raise ValueError("maxScale must be an integer")
+
+        if self.min_scale is not None and self.min_scale < 0:
+            raise ValueError("minScale must be zero or greater")
+
+        if self.max_scale is not None and self.max_scale < 0:
+            raise ValueError("maxScale must be zero or greater")
+
+        # Knative defines max-scale 0 as unlimited, so only positive upper
+        # bounds participate in this relationship check.
+        if (
+            self.min_scale is not None
+            and self.max_scale is not None
+            and self.max_scale > 0
+            and self.min_scale > self.max_scale
+        ):
+            raise ValueError("minScale must not exceed maxScale")
+
+        if (
+            isinstance(self.container_port, bool)
+            or not isinstance(self.container_port, int)
+        ):
+            raise ValueError("containerPort must be an integer")
+
+        if not 1 <= self.container_port <= 65535:
+            raise ValueError(
+                "containerPort must be between 1 and 65535"
+            )
+
+
+@dataclass(frozen=True)
 class Intent:
     target_ref: TargetRef
     objectives: list[Objective]
     constraints: list[Objective] = field(default_factory=list)
-    properties: dict[str, Any] = field(default_factory=dict)
+    properties: IntentProperties = field(default_factory=IntentProperties)
 
     def __post_init__(self) -> None:
         if not self.objectives:

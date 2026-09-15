@@ -5,6 +5,7 @@ from .intent_function import (
     FunctionDescriptor,
     Intent,
     IntentFunction,
+    IntentProperties,
     Objective,
     TargetRef,
 )

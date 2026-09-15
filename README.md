@@ -191,6 +191,45 @@ function. Benchmark duration, validation retries, and monitoring intervals are
 not user intent, so they are kept in the controller-owned runtime
 configuration instead of this submission.
 
+Users may optionally constrain Knative autoscaling under `intent.properties`:
+
+```yaml
+  intent:
+    properties:
+      minScale: 1
+      maxScale: 10
+```
+
+Both fields are optional and must be non-negative integers. Knative interprets
+an explicit `maxScale: 0` as unlimited. If a field is omitted, the controller
+does not add its per-revision annotation, so the corresponding Knative cluster
+default applies. In every case, Knative—not the user or this controller—chooses
+the current replica count from live traffic within the effective bounds.
+
+### Common Experimental Autoscaling Policy
+
+To keep placement experiments reproducible, both clusters use the same
+platform-level fallback policy from:
+
+```text
+controller/config/knative-autoscaling-policy.json
+```
+
+The current experimental bounds are `minScale: 0` and `maxScale: 10`. They
+apply only when a Knative Service does not carry a user-supplied per-revision
+override. Preview and apply the policy from the controller VM with:
+
+```bash
+python3 -m controller.scripts.configure_knative_autoscaling
+python3 -m controller.scripts.configure_knative_autoscaling --apply
+```
+
+The command reads every context in `controller/config/clusters.yaml`, verifies
+that all ConfigMaps are reachable before changing one, merge-patches only the
+`min-scale` and `max-scale` keys, and verifies both values afterward. Knative
+continues to calculate the live replica count from workload; this policy only
+defines the default permitted range.
+
 ### Objective Fields
 
 | Field | Meaning |
@@ -544,7 +583,8 @@ The deployer:
 2. resolves the image for that cluster's local registry;
 3. builds a Knative Service manifest;
 4. applies it using the selected Kubernetes context;
-5. includes Knative `min-scale` and `max-scale` annotations;
+5. includes a Knative `min-scale` or `max-scale` annotation only when the user
+   supplied that bound;
 6. waits for the service's Ready condition;
 7. reads the Knative URL.
 

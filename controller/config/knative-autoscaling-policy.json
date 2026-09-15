@@ -1,0 +1,6 @@
+{
+  "namespace": "knative-serving",
+  "configMap": "config-autoscaler",
+  "minScale": 0,
+  "maxScale": 10
+}

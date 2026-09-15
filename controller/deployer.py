@@ -84,14 +84,17 @@ class KnativeDeployer:
     ) -> dict:
         properties = submission.intent.properties
 
-        min_scale = str(properties.get("minScale", 0))
-        max_scale = str(properties.get("maxScale", 10))
-        container_port = int(properties.get("containerPort", 8080))
+        annotations = {}
 
-        annotations = {
-            "autoscaling.knative.dev/min-scale": min_scale,
-            "autoscaling.knative.dev/max-scale": max_scale,
-        }
+        if properties.min_scale is not None:
+            annotations["autoscaling.knative.dev/min-scale"] = str(
+                properties.min_scale
+            )
+
+        if properties.max_scale is not None:
+            annotations["autoscaling.knative.dev/max-scale"] = str(
+                properties.max_scale
+            )
 
         return {
             "apiVersion": "serving.knative.dev/v1",
@@ -111,7 +114,9 @@ class KnativeDeployer:
                                 "image": image,
                                 "ports": [
                                     {
-                                        "containerPort": container_port,
+                                        "containerPort": (
+                                            properties.container_port
+                                        ),
                                     }
                                 ],
                             }

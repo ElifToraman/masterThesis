@@ -39,8 +39,6 @@ def main() -> int:
     except (
         OSError,
         IntentFunctionParseError,
-        KeyError,
-        ValueError,
     ) as error:
         print(f"IntentFunction is invalid: {error}")
         return 1
@@ -73,4 +71,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
