@@ -25,3 +25,4 @@ spec:
         value: 50
         unit: ms
         measuredBy: benchmark/hello/p95_warm_latency_ms
+        enforcement: hard

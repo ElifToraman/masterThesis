@@ -16,7 +16,12 @@ from typing import Callable
 from controller.benchmarking.models.cluster_benchmark_result import (
     percentile,
 )
-from controller.models import IntentFunction, Objective
+from controller.intent_translation import (
+    NormalizedIntent,
+    NormalizedLocationConstraint,
+    NormalizedRequirement,
+)
+from controller.models import IntentFunction
 from controller.monitoring.models import MetricsSnapshot
 
 
@@ -75,12 +80,28 @@ class PostDeploymentSample:
 class ObjectiveEvaluation:
     name: str
     measured_by: str
+    metric_id: str
+    statistic: str
+    enforcement: str
     operator: str
     target: float
     unit: str | None
     observed: float | None
     supported: bool
     satisfied: bool | None
+
+
+@dataclass(frozen=True)
+class LocationConstraintEvaluation:
+    name: str
+    constraint_type: str
+    target: str
+    operator: str
+    values: list[str]
+    enforcement: str
+    observed_cluster: str
+    supported: bool
+    satisfied: bool
 
 
 @dataclass(frozen=True)
@@ -101,7 +122,9 @@ class PostDeploymentSummary:
     p95_latency_ms: float | None
     intent_satisfied: bool | None
     objective_evaluations: list[ObjectiveEvaluation]
-    constraint_evaluations: list[ObjectiveEvaluation]
+    constraint_evaluations: list[
+        ObjectiveEvaluation | LocationConstraintEvaluation
+    ]
     latest_sample: PostDeploymentSample | None
     control_loop_enabled: bool
     consecutive_violation_windows: int
@@ -120,6 +143,7 @@ class PostDeploymentMonitor:
         *,
         run_id: str,
         submission: IntentFunction,
+        normalized_intent: NormalizedIntent,
         cluster_name: str,
         url: str,
         snapshot_collector: SnapshotCollector,
@@ -149,6 +173,7 @@ class PostDeploymentMonitor:
 
         self.run_id = run_id
         self.submission = submission
+        self.normalized_intent = normalized_intent
         self.cluster_name = cluster_name
         self.url = url
         self.snapshot_collector = snapshot_collector
@@ -593,11 +618,13 @@ class PostDeploymentMonitor:
         }
         objectives = [
             self._evaluate(objective, observed)
-            for objective in self.submission.intent.objectives
+            for objective in self.normalized_intent.objectives
+            if "runtime" in objective.phases
         ]
         constraints = [
-            self._evaluate(constraint, observed)
-            for constraint in self.submission.intent.constraints
+            self._evaluate_constraint(constraint, observed)
+            for constraint in self.normalized_intent.constraints
+            if "runtime" in constraint.phases
         ]
 
         if len(samples) < self.minimum_samples:
@@ -605,16 +632,30 @@ class PostDeploymentMonitor:
             intent_satisfied: bool | None = None
         else:
             all_evaluations = [*objectives, *constraints]
+            hard_evaluations = [
+                evaluation
+                for evaluation in all_evaluations
+                if evaluation.enforcement == "hard"
+            ]
             intent_satisfied = bool(all_evaluations) and all(
                 evaluation.supported
                 and evaluation.satisfied is True
                 for evaluation in all_evaluations
             )
-            state = (
-                "intent-satisfied"
-                if intent_satisfied
-                else "intent-violated"
+            hard_requirements_satisfied = all(
+                evaluation.supported
+                and evaluation.satisfied is True
+                for evaluation in hard_evaluations
             )
+
+            if not all_evaluations:
+                state = "no-runtime-requirements"
+            elif not hard_requirements_satisfied:
+                state = "intent-violated"
+            elif intent_satisfied:
+                state = "intent-satisfied"
+            else:
+                state = "best-effort"
 
         return PostDeploymentSummary(
             timestamp=_now(),
@@ -712,24 +753,31 @@ class PostDeploymentMonitor:
 
     def _evaluate(
         self,
-        requirement: Objective,
+        requirement: NormalizedRequirement,
         observed: dict[str, float | None],
     ) -> ObjectiveEvaluation:
         value = self._observed_value(requirement, observed)
         comparator = COMPARATORS.get(requirement.operator)
-        supported = value is not None and comparator is not None
+        supported = (
+            "runtime" in requirement.phases
+            and requirement.runtime_source is not None
+            and comparator is not None
+        )
         satisfied = (
-            bool(comparator(value, requirement.value))
+            bool(comparator(value, requirement.canonical_value))
             if supported and comparator is not None and value is not None
             else None
         )
 
         return ObjectiveEvaluation(
-            name=requirement.name,
-            measured_by=requirement.measured_by,
+            name=requirement.requirement_id,
+            measured_by=requirement.source_measured_by,
+            metric_id=requirement.metric_id,
+            statistic=requirement.statistic,
+            enforcement=requirement.enforcement,
             operator=requirement.operator,
-            target=requirement.value,
-            unit=requirement.unit,
+            target=requirement.canonical_value,
+            unit=requirement.canonical_unit,
             observed=(
                 round(value, 4)
                 if value is not None
@@ -739,64 +787,51 @@ class PostDeploymentMonitor:
             satisfied=satisfied,
         )
 
+    def _evaluate_constraint(
+        self,
+        requirement: NormalizedRequirement | NormalizedLocationConstraint,
+        observed: dict[str, float | None],
+    ) -> ObjectiveEvaluation | LocationConstraintEvaluation:
+        if isinstance(requirement, NormalizedRequirement):
+            return self._evaluate(requirement, observed)
+
+        included = self.cluster_name in requirement.values
+        satisfied = (
+            included
+            if requirement.operator == "in"
+            else not included
+        )
+        return LocationConstraintEvaluation(
+            name=requirement.constraint_id,
+            constraint_type="location",
+            target=requirement.target,
+            operator=requirement.operator,
+            values=list(requirement.values),
+            enforcement=requirement.enforcement,
+            observed_cluster=self.cluster_name,
+            supported="runtime" in requirement.phases,
+            satisfied=satisfied,
+        )
+
     def _observed_value(
         self,
-        requirement: Objective,
+        requirement: NormalizedRequirement,
         observed: dict[str, float | None],
     ) -> float | None:
-        text = (
-            f"{requirement.measured_by} {requirement.name}"
-        ).lower()
+        if "runtime" not in requirement.phases:
+            return None
 
-        if "p95" in text:
-            return observed["p95_latency_ms"]
-        if "p50" in text:
-            return observed["p50_latency_ms"]
-        if any(term in text for term in ("average", "avg", "mean")):
-            return observed["average_latency_ms"]
-        if "success" in text or "availability" in text:
-            return observed["success_rate"]
-        if "available" in text and "cpu" in text:
-            return observed["available_cpu_cores"]
-        if "available" in text and "memory" in text:
-            return self._convert_bytes(
-                observed["available_memory_bytes"],
-                requirement.unit,
-            )
-        if "cpu" in text and (
-            "usage" in text or "load" in text
-        ):
-            return observed["vm_cpu_usage_percent"]
-        if "memory" in text and (
-            "usage" in text or "load" in text
-        ):
-            return observed["vm_memory_usage_percent"]
-        if "latency" in text or "response" in text:
-            return observed["p95_latency_ms"]
+        source = requirement.runtime_source
 
-        return None
+        if source is None:
+            return None
 
-    def _convert_bytes(
-        self,
-        value: float | None,
-        unit: str | None,
-    ) -> float | None:
+        value = observed.get(source.field)
+
         if value is None:
             return None
 
-        divisors = {
-            "b": 1,
-            "byte": 1,
-            "bytes": 1,
-            "kib": 1024,
-            "mib": 1024**2,
-            "gib": 1024**3,
-            "kb": 1000,
-            "mb": 1000**2,
-            "gb": 1000**3,
-        }
-        divisor = divisors.get((unit or "bytes").lower())
-        return value / divisor if divisor is not None else None
+        return value * source.canonical_factor
 
     def _append_sample(
         self,

@@ -7,6 +7,7 @@ from controller.intent_function_parser import (
     IntentFunctionParseError,
     parse_intent_function_payload,
 )
+from controller.models import LocationConstraint
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -61,8 +62,30 @@ def main() -> int:
             f"{objective.measured_by} "
             f"{objective.operator} "
             f"{objective.value} "
-            f"{objective.unit or ''}".rstrip()
+            f"{objective.unit or ''} "
+            f"[{objective.enforcement}]".rstrip()
         )
+
+    for constraint in submission.intent.constraints:
+        if isinstance(constraint, LocationConstraint):
+            print(
+                "constraint: "
+                f"{constraint.name} -> location "
+                f"{constraint.target} "
+                f"{constraint.operator} "
+                f"{list(constraint.values)} "
+                f"[{constraint.enforcement}]"
+            )
+        else:
+            print(
+                "constraint: "
+                f"{constraint.name} -> "
+                f"{constraint.measured_by} "
+                f"{constraint.operator} "
+                f"{constraint.value} "
+                f"{constraint.unit or ''} "
+                f"[{constraint.enforcement}]".rstrip()
+            )
 
     print(f"image: {function.image}")
 

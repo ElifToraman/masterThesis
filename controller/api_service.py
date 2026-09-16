@@ -16,6 +16,14 @@ from pathlib import Path
 from typing import Callable
 from urllib.parse import urlparse
 
+from controller.intent_translation import (
+    IntentSemanticError,
+    load_normalized_intent,
+    NormalizedIntent,
+    validate_location_constraint_clusters,
+    write_normalized_intent,
+)
+from controller.models import IntentFunction
 from controller.post_deployment_monitor import (
     PostDeploymentMonitor,
     PostDeploymentSummary,
@@ -54,6 +62,7 @@ class OrchestrationStatus:
     return_code: int | None
     error: str | None
     submission_file: str
+    normalized_intent_file: str
     log_file: str
     placement_monitoring_snapshot_file: str
     decision_file: str
@@ -100,7 +109,21 @@ class OrchestrationManager:
         *,
         trigger: dict | None = None,
     ) -> OrchestrationStatus:
-        validate_hello_submission(raw_submission)
+        _, normalized_intent = validate_hello_submission(raw_submission)
+
+        from controller.runtime_config import load_cluster_configs
+
+        clusters = load_cluster_configs(self.cluster_config_file)
+
+        try:
+            validate_location_constraint_clusters(
+                normalized_intent,
+                set(clusters),
+            )
+        except IntentSemanticError as error:
+            raise SubmissionValidationError(
+                f"IntentFunction semantics are invalid: {error}"
+            ) from error
 
         with self._lock:
             if self._active_run_id is not None:
@@ -116,6 +139,11 @@ class OrchestrationManager:
         run_directory.mkdir(parents=True, exist_ok=False)
         submission_file = run_directory / "submission.yaml"
         submission_file.write_bytes(raw_submission)
+        write_normalized_intent(
+            normalized_intent,
+            run_directory / "normalized-intent.json",
+            source_payload=raw_submission,
+        )
 
         status = self._status(
             run_id=run_id,
@@ -159,6 +187,15 @@ class OrchestrationManager:
         try:
             payload = json.loads(
                 status_file.read_text(encoding="utf-8")
+            )
+            payload.setdefault(
+                "normalized_intent_file",
+                str(
+                    self.results_directory
+                    / "runs"
+                    / run_id
+                    / "normalized-intent.json"
+                ),
             )
             payload.setdefault(
                 "placement_monitoring_snapshot_file",
@@ -297,6 +334,8 @@ class OrchestrationManager:
             "controller.orchestrator",
             "--submission",
             running.submission_file,
+            "--normalized-intent",
+            running.normalized_intent_file,
             "--cluster-config",
             str(self.cluster_config_file),
             "--policy-config",
@@ -421,9 +460,28 @@ class OrchestrationManager:
                 encoding="utf-8"
             )
         )
-        submission = load_submission(
-            run_directory / "submission.yaml"
-        )
+        submission_file = run_directory / "submission.yaml"
+        source_payload = submission_file.read_bytes()
+        normalized_intent_file = run_directory / "normalized-intent.json"
+
+        if normalized_intent_file.is_file():
+            normalized_intent = load_normalized_intent(
+                normalized_intent_file,
+                source_payload=source_payload,
+            )
+            submission = load_submission(
+                submission_file,
+                validate_semantics=False,
+            )
+        else:
+            submission, normalized_intent = validate_hello_submission(
+                source_payload
+            )
+            write_normalized_intent(
+                normalized_intent,
+                normalized_intent_file,
+                source_payload=source_payload,
+            )
         clusters = load_cluster_configs(
             self.cluster_config_file
         )
@@ -458,6 +516,7 @@ class OrchestrationManager:
         monitor = PostDeploymentMonitor(
             run_id=run_id,
             submission=submission,
+            normalized_intent=normalized_intent,
             cluster_name=cluster_name,
             url=str(execution["url"]),
             snapshot_collector=(
@@ -861,6 +920,9 @@ class OrchestrationManager:
             submission_file=str(
                 run_directory / "submission.yaml"
             ),
+            normalized_intent_file=str(
+                run_directory / "normalized-intent.json"
+            ),
             log_file=str(
                 run_directory / "orchestrator.log"
             ),
@@ -1061,15 +1123,17 @@ class ControllerAPIHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
-def validate_hello_submission(raw_submission: bytes) -> None:
+def validate_hello_submission(
+    raw_submission: bytes,
+) -> tuple[IntentFunction, NormalizedIntent]:
     try:
         from controller.intent_function_parser import (
             IntentFunctionParseError,
-            parse_intent_function_payload,
+            parse_and_translate_intent_function_payload,
         )
 
-        submission = parse_intent_function_payload(
-            raw_submission
+        submission, normalized_intent = (
+            parse_and_translate_intent_function_payload(raw_submission)
         )
     except IntentFunctionParseError as error:
         raise SubmissionValidationError(
@@ -1084,6 +1148,8 @@ def validate_hello_submission(raw_submission: bytes) -> None:
             "This controller currently accepts only the "
             "'hello' function with serviceName 'hello'"
         )
+
+    return submission, normalized_intent
 
 
 def create_server(

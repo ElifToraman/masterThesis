@@ -6,6 +6,14 @@ import sys
 import uuid
 from pathlib import Path
 
+from controller.intent_function_parser import (
+    parse_and_translate_intent_function_payload,
+)
+from controller.intent_translation import (
+    load_normalized_intent,
+    validate_location_constraint_clusters,
+    write_normalized_intent,
+)
 from controller.runtime_config import (
     DEFAULT_CLUSTER_CONFIG_FILE,
     DEFAULT_POLICY_CONFIG_FILE,
@@ -48,6 +56,15 @@ def main(argv: list[str] | None = None) -> None:
         help="Path to an IntentFunction YAML or JSON file.",
     )
     parser.add_argument(
+        "--normalized-intent",
+        type=Path,
+        default=None,
+        help=(
+            "Path to the normalized intent artifact. Defaults to "
+            "results/runs/<run-id>/normalized-intent.json."
+        ),
+    )
+    parser.add_argument(
         "--policy-config",
         type=Path,
         default=DEFAULT_POLICY_CONFIG_FILE,
@@ -83,9 +100,8 @@ def main(argv: list[str] | None = None) -> None:
     policy_config_file = args.policy_config.expanduser().resolve()
     runtime_config_file = args.runtime_config.expanduser().resolve()
 
-    # Validate every input before performing any cluster mutation.
-    load_submission(submission_file)
-    load_cluster_configs(cluster_config_file)
+    # Validate every non-intent input before performing any cluster mutation.
+    clusters = load_cluster_configs(cluster_config_file)
     load_policy_config(policy_config_file)
     load_runtime_config(runtime_config_file)
 
@@ -97,11 +113,42 @@ def main(argv: list[str] | None = None) -> None:
         )
     print(f"Orchestration run ID: {run_id}")
 
+    run_directory = (
+        Path(__file__).resolve().parent / "results" / "runs" / run_id
+    )
+    normalized_intent_file = (
+        args.normalized_intent.expanduser().resolve()
+        if args.normalized_intent is not None
+        else run_directory / "normalized-intent.json"
+    )
+    source_payload = submission_file.read_bytes()
+
+    if normalized_intent_file.is_file():
+        normalized_intent = load_normalized_intent(
+            normalized_intent_file,
+            source_payload=source_payload,
+        )
+        submission = load_submission(
+            submission_file,
+            validate_semantics=False,
+        )
+    else:
+        submission, normalized_intent = (
+            parse_and_translate_intent_function_payload(source_payload)
+        )
+        write_normalized_intent(
+            normalized_intent,
+            normalized_intent_file,
+            source_payload=source_payload,
+        )
+
+    validate_location_constraint_clusters(
+        normalized_intent,
+        set(clusters),
+    )
+
     placement_snapshot_file = (
-        Path(__file__).resolve().parent
-        / "results"
-        / "runs"
-        / run_id
+        run_directory
         / "placement-monitoring"
         / "snapshot.json"
     )
@@ -147,6 +194,8 @@ def main(argv: list[str] | None = None) -> None:
             "-m",
             "controller.scripts.run_decision_policy",
             *common_arguments,
+            "--normalized-intent",
+            str(normalized_intent_file),
             "--policy-config",
             str(policy_config_file),
             "--monitoring-snapshot",

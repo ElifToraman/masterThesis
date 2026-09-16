@@ -8,6 +8,7 @@ from controller.decision_policy import (
     write_decision,
 )
 from controller.image_resolver import resolve_image_for_registry
+from controller.intent_translation import load_normalized_intent
 from controller.monitoring.snapshot_repository import (
     load_metrics_snapshot,
 )
@@ -27,6 +28,11 @@ def main(argv: list[str] | None = None) -> None:
         "--submission",
         type=Path,
         default=DEFAULT_SUBMISSION_FILE,
+    )
+    parser.add_argument(
+        "--normalized-intent",
+        type=Path,
+        required=True,
     )
     parser.add_argument(
         "--policy-config",
@@ -54,7 +60,15 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     controller_directory = Path(__file__).resolve().parents[1]
-    submission = load_submission(args.submission)
+    submission_file = args.submission.expanduser().resolve()
+    normalized_intent = load_normalized_intent(
+        args.normalized_intent.expanduser().resolve(),
+        source_payload=submission_file.read_bytes(),
+    )
+    submission = load_submission(
+        submission_file,
+        validate_semantics=False,
+    )
     clusters = load_cluster_configs(args.cluster_config)
     policy_config = load_policy_config(args.policy_config)
     snapshot_file = (
@@ -114,6 +128,7 @@ def main(argv: list[str] | None = None) -> None:
 
     decision = policy.decide(
         submission=submission,
+        normalized_intent=normalized_intent,
         snapshot=snapshot,
     )
 

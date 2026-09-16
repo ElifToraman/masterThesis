@@ -108,6 +108,8 @@ def load_cluster_configs(
 
 def load_submission(
     submission_file: Path,
+    *,
+    validate_semantics: bool = True,
 ):
     from controller.intent_function_parser import (
         parse_intent_function_payload,
@@ -121,7 +123,8 @@ def load_submission(
         )
 
     return parse_intent_function_payload(
-        submission_file.read_text(encoding="utf-8")
+        submission_file.read_text(encoding="utf-8"),
+        validate_semantics=validate_semantics,
     )
 
 

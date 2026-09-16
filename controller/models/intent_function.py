@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 
 SUPPORTED_OPERATORS = {
@@ -11,6 +11,9 @@ SUPPORTED_OPERATORS = {
     ">=",
     ">",
 }
+SUPPORTED_ENFORCEMENTS = {"hard", "soft"}
+Enforcement = Literal["hard", "soft"]
+LocationOperator = Literal["in", "notIn"]
 
 
 @dataclass(frozen=True)
@@ -63,6 +66,7 @@ class Objective:
     unit: str | None = None
     description: str | None = None
     weight: float = 1.0
+    enforcement: Enforcement = "soft"
 
     def __post_init__(self) -> None:
         if not self.name.strip():
@@ -78,6 +82,68 @@ class Objective:
 
         if self.weight <= 0:
             raise ValueError("Objective weight must be positive")
+
+        if (
+            not isinstance(self.enforcement, str)
+            or self.enforcement not in SUPPORTED_ENFORCEMENTS
+        ):
+            raise ValueError(
+                "Objective enforcement must be 'hard' or 'soft'"
+            )
+
+
+@dataclass(frozen=True)
+class LocationConstraint:
+    name: str
+    target: str
+    operator: LocationOperator
+    values: tuple[str, ...]
+    enforcement: Enforcement = "hard"
+    priority: float = 1.0
+    description: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.name.strip():
+            raise ValueError("Location constraint name must not be empty")
+
+        if not self.target.strip():
+            raise ValueError("Location constraint target must not be empty")
+
+        if self.operator not in {"in", "notIn"}:
+            raise ValueError(
+                "Location constraint operator must be 'in' or 'notIn'"
+            )
+
+        if not self.values:
+            raise ValueError(
+                "Location constraint values must not be empty"
+            )
+
+        if any(not value.strip() for value in self.values):
+            raise ValueError(
+                "Location constraint values must not contain empty names"
+            )
+
+        if len(set(self.values)) != len(self.values):
+            raise ValueError(
+                "Location constraint values must not contain duplicates"
+            )
+
+        if (
+            not isinstance(self.enforcement, str)
+            or self.enforcement not in SUPPORTED_ENFORCEMENTS
+        ):
+            raise ValueError(
+                "Location constraint enforcement must be 'hard' or 'soft'"
+            )
+
+        if self.priority <= 0:
+            raise ValueError(
+                "Location constraint priority must be positive"
+            )
+
+
+Constraint = Objective | LocationConstraint
 
 
 @dataclass(frozen=True)
@@ -137,7 +203,7 @@ class IntentProperties:
 class Intent:
     target_ref: TargetRef
     objectives: list[Objective]
-    constraints: list[Objective] = field(default_factory=list)
+    constraints: list[Constraint] = field(default_factory=list)
     properties: IntentProperties = field(default_factory=IntentProperties)
 
     def __post_init__(self) -> None:

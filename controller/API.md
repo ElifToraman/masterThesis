@@ -15,6 +15,28 @@ That file controls benchmark load, final invocation validation,
 post-deployment monitoring, and automatic control-loop guards. REST clients
 cannot change those experiment parameters inside their intent submission.
 
+IntentFunction admission uses a closed schema. Unknown fields, duplicate YAML
+keys, missing required fields, wrong types, non-finite numbers, unsupported
+operators or enum values, malformed Kubernetes names, and a `targetRef` that
+does not identify the submitted service return `400 Bad Request`. Metadata is
+currently limited to `metadata.name`; labels and annotations are not silently
+accepted.
+
+Location requirements can be declared as typed constraints:
+
+```yaml
+constraints:
+  - type: location
+    name: hello-location
+    target: hello
+    operator: in
+    values: [vm1-cluster]
+    enforcement: hard
+```
+
+`operator` may be `in` or `notIn`. Hard mismatches reject a placement;
+soft mismatches influence ranking without making the cluster infeasible.
+
 Start it on the controller VM:
 
 ```bash
@@ -81,8 +103,10 @@ curl \
   http://127.0.0.1:8088/v1/orchestrations/<run-id>/monitoring
 ```
 
-Monitoring states are `warming-up`, `intent-satisfied`, `intent-violated`, and
-`monitoring-failed`. Evidence is persisted under:
+Monitoring states are `warming-up`, `intent-satisfied`, `best-effort`,
+`intent-violated`, `no-runtime-requirements`, and `monitoring-failed`.
+Only failed hard requirements produce `intent-violated`; failed soft
+requirements produce `best-effort`. Evidence is persisted under:
 
 ```text
 controller/results/runs/<run-id>/post-deployment/samples.jsonl

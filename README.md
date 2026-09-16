@@ -183,9 +183,29 @@ spec:
         value: 50
         unit: ms
         measuredBy: benchmark/hello/p95_warm_latency_ms
+        enforcement: hard
 ```
 
-The parser validates the document and converts it into typed Python models.
+The parser validates the document against a closed schema and converts it into
+typed Python models. Unknown fields and duplicate YAML keys are rejected at
+every level rather than ignored. The accepted mappings are:
+
+| Mapping | Required fields | Optional fields |
+|---|---|---|
+| Document | `apiVersion`, `kind`, `metadata`, `spec` | None |
+| `metadata` | `name` | None |
+| `spec` | `function`, `intent` | None |
+| `spec.function` | `name`, `version`, `image` | `namespace`, `serviceName`, `runtime` |
+| `spec.intent` | `targetRef`, `objectives` | `constraints`, `properties` |
+| `targetRef` | `kind`, `name` | None |
+| Numeric objective or constraint | `name`, `operator`, `value`, `measuredBy` | `description`, `unit`, `weight`, `enforcement` |
+
+Names used for Kubernetes resources and requirement identifiers must follow
+lowercase DNS naming rules. `targetRef.kind` must be `KnativeService`, and its
+`namespace/name` must match the submitted function's namespace and service
+name. The only supported runtime is `knative`. Numeric values must have the
+declared type and be finite; YAML booleans are not accepted as numbers.
+
 The REST endpoint currently intentionally accepts only the plain `hello`
 function. Benchmark duration, validation retries, and monitoring intervals are
 not user intent, so they are kept in the controller-owned runtime
@@ -235,15 +255,69 @@ defines the default permitted range.
 | Field | Meaning |
 |---|---|
 | `name` | Human-readable objective identifier |
-| `measuredBy` | Metric that the policy evaluates |
+| `measuredBy` | Exact measurement binding registered by the controller |
 | `operator` | One of `<`, `<=`, `==`, `>=`, or `>` |
 | `value` | Target value |
 | `unit` | Optional measurement unit |
 | `weight` | Optional positive priority used in multi-objective scoring; default is `1.0` |
+| `enforcement` | Optional `hard` or `soft` classification |
 
-Constraints use the same representation under `intent.constraints`.
-Unsupported objectives and constraints are not silently ignored: they make a
-cluster infeasible and appear in its rejection reasons.
+Legacy metric constraints may use the same representation under
+`intent.constraints`. Qualitative constraints use a typed representation.
+Unsupported objective and constraint semantics are rejected during submission
+validation.
+
+For backward compatibility, objectives default to `soft` and constraints
+default to `hard`. An explicit value takes precedence, so an objective may be
+hard and a constraint may express a soft preference. Hard requirements reject
+a placement and can trigger runtime re-evaluation. Soft requirements affect
+placement ranking; a runtime miss is reported as `best-effort` and does not
+trigger migration. `weight` controls the relative score contribution of soft
+requirements and has no effect on hard feasibility checks.
+
+For the current `intent.elif.dev/v1` hello-function scope, the supported exact
+binding is:
+
+| `measuredBy` | Canonical metric | Statistic | Units | Evaluation phases |
+|---|---|---|---|---|
+| `benchmark/hello/p95_warm_latency_ms` | `application.latency` | `p95` | milliseconds or seconds | placement and runtime |
+
+The controller translates the binding and threshold into a normalized
+requirement before orchestration. Objective names and descriptions are never
+used to select a metric. Unsupported bindings and units are rejected during
+submission validation, before benchmarking or deployment begins.
+
+### Typed Location Constraints
+
+The controller supports location constraints without encoding a cluster name
+as a numeric metric:
+
+```yaml
+constraints:
+  - type: location
+    name: hello-location
+    target: hello
+    operator: in
+    values:
+      - vm1-cluster
+    enforcement: hard
+    priority: 1.0
+```
+
+| Field | Meaning |
+|---|---|
+| `type` | Must be `location` |
+| `name` | Constraint identifier |
+| `target` | The submitted function name, service name, or namespaced name |
+| `operator` | `in` permits only listed clusters; `notIn` excludes them |
+| `values` | Non-empty list of exact cluster names from `controller/config/clusters.yaml` |
+| `enforcement` | Optional `hard` or `soft`; defaults to `hard` |
+| `priority` | Optional positive soft-scoring weight; defaults to `1.0` |
+
+A hard location mismatch makes a placement candidate infeasible. A soft
+mismatch keeps the candidate feasible but adds its weighted penalty. Runtime
+assurance compares the selected deployment cluster with the same normalized
+constraint; only a hard mismatch can trigger re-evaluation.
 
 ## Controller Configuration
 
@@ -376,8 +450,9 @@ same clusters.
 3. confirms that the submission targets the supported `hello` function;
 4. creates `controller/results/runs/<run-id>/`;
 5. saves the exact request as `submission.yaml`;
-6. writes `status.json` with state `accepted`;
-7. starts an asynchronous orchestration worker.
+6. saves its canonical machine-readable SLO as `normalized-intent.json`;
+7. writes `status.json` with state `accepted`;
+8. starts an asynchronous orchestration worker.
 
 ### 2. Orchestration
 
@@ -530,24 +605,19 @@ A cluster can be rejected for:
 - missing or failed benchmark;
 - benchmark success rate below the configured minimum;
 - insufficient physical CPU or memory after safety factors;
-- unsupported objective or constraint;
-- violated hard constraint.
+- a missing measurement for a hard requirement;
+- a violated hard requirement.
 
 #### Supported intent measurements
 
-The policy can evaluate:
+The current registry evaluates the exact p95 warm-latency binding documented
+under **Objective Fields**. New metrics must be added explicitly to the shared
+registry with their statistic, unit conversion, placement source, and runtime
+source.
 
-- p95, p50, and average warm latency;
-- first-invocation/cold-start latency;
-- deployment duration;
-- success rate;
-- throughput;
-- physical VM CPU or memory usage;
-- available physical CPU or memory.
-
-Multiple objectives are evaluated together. An objective's `weight` changes
-its contribution to the objective component of the score. Constraints are
-hard feasibility requirements.
+Multiple soft requirements are evaluated together. A soft requirement's
+`weight` changes its contribution to the objective component of the score.
+Hard requirements are feasibility gates and are not included in that score.
 
 #### Normalized score
 
@@ -567,10 +637,12 @@ The configured weights are normalized by their sum.
 
 Selection order:
 
-1. Select the lowest-score feasible cluster that satisfies all objectives.
-2. If no feasible cluster satisfies every objective, select the lowest-score
-   feasible cluster in `best-effort` mode.
-3. If no cluster is feasible, fail without deploying.
+1. Reject every cluster that fails a hard requirement.
+2. Select the lowest-score feasible cluster that satisfies all soft
+   requirements.
+3. If no feasible cluster satisfies every soft requirement, select the
+   lowest-score feasible cluster in `best-effort` mode.
+4. If no cluster is feasible, fail without deploying.
 
 The complete decision, candidate measurements, scores, and rejection reasons
 are saved per run.
@@ -632,8 +704,10 @@ Monitoring states:
 |---|---|
 | `waiting-for-deployment` | Orchestration has not completed |
 | `warming-up` | Fewer than the configured minimum samples exist |
-| `intent-satisfied` | All current live objective and constraint evaluations pass |
-| `intent-violated` | At least one live evaluation fails |
+| `intent-satisfied` | All current live hard and soft requirements pass |
+| `best-effort` | All hard requirements pass, but at least one soft requirement does not |
+| `intent-violated` | At least one live hard requirement is missing or fails |
+| `no-runtime-requirements` | The normalized intent has no runtime requirements |
 | `monitoring-failed` | The monitoring loop could not start |
 
 ### 10. Automatic Re-evaluation and Migration
@@ -875,6 +949,7 @@ Run-specific evidence:
 ```text
 controller/results/runs/<run-id>/
 ├── submission.yaml
+├── normalized-intent.json
 ├── status.json
 ├── orchestrator.log
 ├── placement-monitoring/

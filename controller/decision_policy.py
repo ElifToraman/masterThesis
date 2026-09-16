@@ -8,7 +8,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from controller.models import IntentFunction, Objective
+from controller.intent_translation import (
+    NormalizedIntent,
+    NormalizedLocationConstraint,
+    NormalizedRequirement,
+)
+from controller.models import IntentFunction
 from controller.monitoring.models import MetricsSnapshot
 
 
@@ -88,7 +93,7 @@ class DecisionPolicy:
     Intent-aware cluster policy.
 
     Inputs:
-      - user-submitted function + high-level intent
+      - user-submitted function + normalized intent requirements
       - latest benchmark result per cluster
       - latest monitoring snapshot
 
@@ -168,6 +173,7 @@ class DecisionPolicy:
         self,
         *,
         submission: IntentFunction,
+        normalized_intent: NormalizedIntent,
         snapshot: MetricsSnapshot,
     ) -> PlacementDecision:
         benchmarks = self._load_latest_benchmarks(
@@ -192,6 +198,7 @@ class DecisionPolicy:
             self._build_candidate(
                 cluster_name=cluster_name,
                 submission=submission,
+                normalized_intent=normalized_intent,
                 snapshot=snapshot,
                 benchmark=benchmarks.get(cluster_name),
             )
@@ -260,6 +267,7 @@ class DecisionPolicy:
         *,
         cluster_name: str,
         submission: IntentFunction,
+        normalized_intent: NormalizedIntent,
         snapshot: MetricsSnapshot,
         benchmark: dict[str, Any] | None,
     ) -> ClusterDecisionCandidate:
@@ -477,56 +485,69 @@ class DecisionPolicy:
             ),
         }
 
-        objective_results = [
-            self._requirement_satisfied(
-                objective=objective,
-                observed_metrics=observed_metrics,
+        placement_requirements = tuple(
+            requirement
+            for requirement in (
+                *normalized_intent.objectives,
+                *normalized_intent.constraints,
             )
-            for objective in submission.intent.objectives
-        ]
+            if "placement" in requirement.phases
+        )
+        requirement_results = []
 
-        for objective, result in zip(
-            submission.intent.objectives,
-            objective_results,
-        ):
+        for requirement in placement_requirements:
+            if isinstance(requirement, NormalizedRequirement):
+                result = self._requirement_satisfied(
+                    requirement=requirement,
+                    observed_metrics=observed_metrics,
+                )
+            else:
+                result = self._location_constraint_satisfied(
+                    requirement=requirement,
+                    cluster_name=cluster_name,
+                )
+
+            requirement_results.append((requirement, result))
+
+        for requirement, result in requirement_results:
+            if requirement.enforcement != "hard":
+                continue
+
             if result is None:
                 rejection_reasons.append(
-                    f"unsupported_intent_objective:{objective.name}"
+                    "missing_hard_requirement_measurement:"
+                    f"{self._requirement_id(requirement)}"
+                )
+            elif not result:
+                rejection_reasons.append(
+                    "hard_requirement_violated:"
+                    f"{self._requirement_id(requirement)}"
                 )
 
-        if not objective_results:
-            rejection_reasons.append(
-                "no_supported_intent_objective"
-            )
-
-        intent_satisfied = (
-            bool(objective_results)
-            and all(
-                result is True
-                for result in objective_results
-            )
+        intent_satisfied = bool(requirement_results) and all(
+            result is True
+            for _, result in requirement_results
         )
-
-        for constraint in submission.intent.constraints:
-            constraint_result = self._requirement_satisfied(
-                objective=constraint,
-                observed_metrics=observed_metrics,
-            )
-
-            if constraint_result is None:
-                rejection_reasons.append(
-                    f"unsupported_constraint:{constraint.name}"
-                )
-            elif not constraint_result:
-                rejection_reasons.append(
-                    f"constraint_violated:{constraint.name}"
-                )
+        soft_metric_requirements = tuple(
+            requirement
+            for requirement in placement_requirements
+            if requirement.enforcement == "soft"
+            and isinstance(requirement, NormalizedRequirement)
+        )
+        soft_location_constraints = tuple(
+            requirement
+            for requirement in placement_requirements
+            if requirement.enforcement == "soft"
+            and isinstance(requirement, NormalizedLocationConstraint)
+        )
 
         feasible = not rejection_reasons
 
         objective_score = self._weighted_objective_score(
-            objectives=submission.intent.objectives,
+            objectives=soft_metric_requirements,
             observed_metrics=observed_metrics,
+            location_constraints=soft_location_constraints,
+            cluster_name=cluster_name,
         )
 
         score = self._score(
@@ -679,18 +700,18 @@ class DecisionPolicy:
     def _requirement_satisfied(
         self,
         *,
-        objective: Objective,
+        requirement: NormalizedRequirement,
         observed_metrics: dict[str, float | None],
     ) -> bool | None:
-        observed_value = self._objective_observed_value(
-            objective=objective,
+        observed_value = self._requirement_observed_value(
+            requirement=requirement,
             observed_metrics=observed_metrics,
         )
 
         if observed_value is None:
             return None
 
-        comparator = COMPARATORS.get(objective.operator)
+        comparator = COMPARATORS.get(requirement.operator)
 
         if comparator is None:
             return None
@@ -698,95 +719,79 @@ class DecisionPolicy:
         return bool(
             comparator(
                 observed_value,
-                objective.value,
+                requirement.canonical_value,
             )
         )
 
-    def _objective_observed_value(
+    def _location_constraint_satisfied(
         self,
         *,
-        objective: Objective,
+        requirement: NormalizedLocationConstraint,
+        cluster_name: str,
+    ) -> bool:
+        included = cluster_name in requirement.values
+
+        if requirement.operator == "in":
+            return included
+
+        return not included
+
+    def _requirement_id(
+        self,
+        requirement: NormalizedRequirement | NormalizedLocationConstraint,
+    ) -> str:
+        if isinstance(requirement, NormalizedRequirement):
+            return requirement.requirement_id
+
+        return requirement.constraint_id
+
+    def _requirement_observed_value(
+        self,
+        *,
+        requirement: NormalizedRequirement,
         observed_metrics: dict[str, float | None],
     ) -> float | None:
-        measured_by = objective.measured_by.lower()
-        name = objective.name.lower()
-        text = f"{measured_by} {name}"
+        if "placement" not in requirement.phases:
+            return None
 
-        if "p95" in text:
-            return observed_metrics["benchmark_p95_latency_ms"]
+        source = requirement.placement_source
 
-        if "p50" in text:
-            return observed_metrics["benchmark_p50_latency_ms"]
+        if source is None:
+            return None
 
-        if (
-            "average" in text
-            or "avg" in text
-            or "mean" in text
-        ):
-            return observed_metrics[
-                "benchmark_average_latency_ms"
-            ]
+        value = observed_metrics.get(source.field)
 
-        if "first" in text or "cold" in text:
-            return observed_metrics[
-                "benchmark_first_invocation_latency_ms"
-            ]
+        if value is None:
+            return None
 
-        if "deploy" in text:
-            return observed_metrics[
-                "benchmark_deployment_duration_ms"
-            ]
-
-        if "success" in text:
-            return observed_metrics["benchmark_success_rate"]
-
-        if "throughput" in text or "request" in text:
-            return observed_metrics[
-                "benchmark_throughput_requests_per_second"
-            ]
-
-        if "available" in text and "cpu" in text:
-            return observed_metrics["available_cpu_cores"]
-
-        if "available" in text and "memory" in text:
-            value = observed_metrics["available_memory_bytes"]
-            return self._convert_bytes(value, objective.unit)
-
-        if "cpu" in text and (
-            "usage" in text or "load" in text
-        ):
-            return observed_metrics["vm_cpu_usage_percent"]
-
-        if "memory" in text and (
-            "usage" in text or "load" in text
-        ):
-            return observed_metrics["vm_memory_usage_percent"]
-
-        # Default for normal latency/response-time intent.
-        if "latency" in text or "response" in text:
-            return observed_metrics["benchmark_p95_latency_ms"]
-
-        return None
+        return value * source.canonical_factor
 
     def _weighted_objective_score(
         self,
         *,
-        objectives: list[Objective],
+        objectives: tuple[NormalizedRequirement, ...],
         observed_metrics: dict[str, float | None],
+        location_constraints: tuple[
+            NormalizedLocationConstraint,
+            ...,
+        ] = (),
+        cluster_name: str | None = None,
     ) -> float:
         weighted_total = 0.0
         total_weight = 0.0
 
         for objective in objectives:
-            observed = self._objective_observed_value(
-                objective=objective,
+            total_weight += objective.priority
+            observed = self._requirement_observed_value(
+                requirement=objective,
                 observed_metrics=observed_metrics,
             )
 
             if observed is None:
+                weighted_total += objective.priority
                 continue
 
-            target = objective.value
+            target = objective.canonical_value
 
             if objective.operator in {"<", "<="}:
                 ratio = observed / max(abs(target), 1e-9)
@@ -798,11 +803,24 @@ class DecisionPolicy:
                     1.0,
                 )
 
-            weighted_total += self._clamp01(ratio) * objective.weight
-            total_weight += objective.weight
+            weighted_total += self._clamp01(ratio) * objective.priority
+
+        for constraint in location_constraints:
+            total_weight += constraint.priority
+            satisfied = (
+                self._location_constraint_satisfied(
+                    requirement=constraint,
+                    cluster_name=cluster_name,
+                )
+                if cluster_name is not None
+                else False
+            )
+            weighted_total += (
+                0.0 if satisfied else constraint.priority
+            )
 
         if total_weight == 0:
-            return 1.0
+            return 0.0
 
         return weighted_total / total_weight
 
@@ -994,33 +1012,6 @@ class DecisionPolicy:
             return 0.0
 
         return sum(values) / len(values)
-
-    def _convert_bytes(
-        self,
-        value: float | None,
-        unit: str | None,
-    ) -> float | None:
-        if value is None:
-            return None
-
-        normalized_unit = (unit or "bytes").strip().lower()
-        divisors = {
-            "b": 1,
-            "byte": 1,
-            "bytes": 1,
-            "kib": 1024,
-            "mib": 1024**2,
-            "gib": 1024**3,
-            "kb": 1000,
-            "mb": 1000**2,
-            "gb": 1000**3,
-        }
-        divisor = divisors.get(normalized_unit)
-
-        if divisor is None:
-            return None
-
-        return value / divisor
 
     def _clamp01(self, value: float) -> float:
         return min(1.0, max(0.0, value))

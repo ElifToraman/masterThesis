@@ -152,6 +152,7 @@ rather than require a changed placement.
 ```text
 results/benchmarks.jsonl
 results/runs/<run-id>/submission.yaml
+results/runs/<run-id>/normalized-intent.json
 results/runs/<run-id>/status.json
 results/runs/<run-id>/orchestrator.log
 results/runs/<run-id>/placement-monitoring/snapshot.json
