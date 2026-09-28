@@ -16,6 +16,7 @@ from typing import Callable
 from controller.benchmarking.models.cluster_benchmark_result import (
     percentile,
 )
+from controller.function_profiles import InvocationProfile
 from controller.intent_translation import (
     NormalizedIntent,
     NormalizedLocationConstraint,
@@ -148,6 +149,7 @@ class PostDeploymentMonitor:
         url: str,
         snapshot_collector: SnapshotCollector,
         output_directory: Path,
+        invocation_profile: InvocationProfile,
         interval_seconds: float = 10.0,
         window_size: int = 10,
         minimum_samples: int = 3,
@@ -178,6 +180,7 @@ class PostDeploymentMonitor:
         self.url = url
         self.snapshot_collector = snapshot_collector
         self.output_directory = output_directory
+        self.invocation_profile = invocation_profile
         self.interval_seconds = interval_seconds
         self.window_size = window_size
         self.minimum_samples = minimum_samples
@@ -296,21 +299,36 @@ class PostDeploymentMonitor:
 
         try:
             with urllib.request.urlopen(
-                self.url,
+                self.invocation_profile.make_request(self.url),
                 timeout=self.request_timeout_seconds,
             ) as response:
-                response.read()
+                body = response.read()
                 latency = round(
                     (time.perf_counter() - started_at)
                     * 1000,
                     3,
                 )
-                succeeded = 200 <= response.status < 300
+                validation_error = (
+                    self.invocation_profile.validate_response_body(body)
+                )
+                succeeded = (
+                    200 <= response.status < 300
+                    and validation_error is None
+                )
                 return (
                     succeeded,
                     response.status,
                     latency,
-                    None if succeeded else f"HTTP {response.status}",
+                    (
+                        None
+                        if succeeded
+                        else (
+                            "Function response validation failed: "
+                            f"{validation_error}"
+                            if validation_error is not None
+                            else f"HTTP {response.status}"
+                        )
+                    ),
                 )
         except urllib.error.HTTPError as error:
             error.read()

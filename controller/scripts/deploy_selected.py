@@ -18,6 +18,11 @@ from controller.runtime_config import (
     load_runtime_config,
     load_submission,
 )
+from controller.function_profiles import (
+    DEFAULT_FUNCTION_PROFILES_FILE,
+    load_function_profiles,
+    require_function_profile,
+)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -36,6 +41,11 @@ def main(argv: list[str] | None = None) -> None:
         "--runtime-config",
         type=Path,
         default=DEFAULT_RUNTIME_CONFIG_FILE,
+    )
+    parser.add_argument(
+        "--function-profiles",
+        type=Path,
+        default=DEFAULT_FUNCTION_PROFILES_FILE,
     )
     parser.add_argument(
         "--run-id",
@@ -67,6 +77,10 @@ def main(argv: list[str] | None = None) -> None:
     submission = load_submission(args.submission)
     clusters = load_cluster_configs(args.cluster_config)
     runtime_config = load_runtime_config(args.runtime_config)
+    profile = require_function_profile(
+        load_function_profiles(args.function_profiles),
+        submission.function.name,
+    )
     run_id = args.run_id or uuid.uuid4().hex
 
     result = KnativeDeployer(clusters).deploy(
@@ -89,6 +103,7 @@ def main(argv: list[str] | None = None) -> None:
         namespace=result.namespace,
         image=result.image,
         url=result.url,
+        invocation=profile.invocation,
         maximum_attempts=int(
             validation_properties.get("maximumAttempts", 5)
         ),
@@ -136,7 +151,7 @@ def main(argv: list[str] | None = None) -> None:
 
     if not validation.success:
         raise SystemExit(
-            "The deployed hello service did not pass "
+            "The deployed function did not pass "
             "final invocation validation."
         )
 

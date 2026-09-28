@@ -1,0 +1,28 @@
+apiVersion: intent.elif.dev/v1
+kind: IntentFunction
+
+metadata:
+  name: gzip-compression-intent-function
+
+spec:
+  function:
+    name: gzip-compression
+    namespace: default
+    serviceName: gzip-compression
+    version: functionbench-bebda51-v1
+    runtime: knative
+    image: elif/gzip-compression:v1
+
+  intent:
+    targetRef:
+      kind: KnativeService
+      name: default/gzip-compression
+
+    objectives:
+      - name: gzip-compression-p95-latency
+        description: Provisional pilot guardrail; calibrate before evaluation
+        operator: "<="
+        value: 10000
+        unit: ms
+        measuredBy: benchmark/gzip-compression/p95_warm_latency_ms
+        enforcement: soft

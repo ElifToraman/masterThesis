@@ -8,6 +8,7 @@ from pathlib import Path
 
 from controller.intent_function_parser import parse_intent_function_payload
 from controller.intent_translation import translate_intent
+from controller.function_profiles import load_function_profiles
 from controller.post_deployment_monitor import (
     PostDeploymentMonitor,
     PostDeploymentSample,
@@ -35,6 +36,9 @@ class NormalizedPostDeploymentMonitorTests(unittest.TestCase):
             url="http://example.invalid",
             snapshot_collector=lambda: None,
             output_directory=Path(self.temporary_directory.name),
+            invocation_profile=(
+                load_function_profiles()["hello"].invocation
+            ),
             interval_seconds=1,
             window_size=3,
             minimum_samples=1,

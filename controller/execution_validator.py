@@ -6,7 +6,10 @@ import urllib.error
 import urllib.request
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+from hashlib import sha256
 from pathlib import Path
+
+from controller.function_profiles import InvocationProfile
 
 
 @dataclass(frozen=True)
@@ -18,6 +21,9 @@ class ExecutionValidationResult:
     namespace: str
     image: str
     url: str
+    request_method: str
+    request_path: str
+    request_body_sha256: str | None
     success: bool
     attempts: int
     status_code: int | None
@@ -34,6 +40,7 @@ def validate_deployment(
     namespace: str,
     image: str,
     url: str,
+    invocation: InvocationProfile,
     maximum_attempts: int = 5,
     timeout_seconds: float = 10.0,
     retry_interval_seconds: float = 2.0,
@@ -53,7 +60,7 @@ def validate_deployment(
 
         try:
             with urllib.request.urlopen(
-                url,
+                invocation.make_request(url),
                 timeout=timeout_seconds,
             ) as response:
                 body = response.read()
@@ -71,19 +78,26 @@ def validate_deployment(
                 last_error = None
 
                 if 200 <= status_code < 300:
-                    return _result(
-                        run_id=run_id,
-                        cluster_name=cluster_name,
-                        service_name=service_name,
-                        namespace=namespace,
-                        image=image,
-                        url=url,
-                        success=True,
-                        attempts=attempt,
-                        status_code=last_status,
-                        latency_ms=last_latency,
-                        response_body=last_body,
-                        error=None,
+                    validation_error = invocation.validate_response_body(body)
+                    if validation_error is None:
+                        return _result(
+                            run_id=run_id,
+                            cluster_name=cluster_name,
+                            service_name=service_name,
+                            namespace=namespace,
+                            image=image,
+                            url=url,
+                            invocation=invocation,
+                            success=True,
+                            attempts=attempt,
+                            status_code=last_status,
+                            latency_ms=last_latency,
+                            response_body=last_body,
+                            error=None,
+                        )
+                    last_error = (
+                        "Function response validation failed: "
+                        f"{validation_error}"
                     )
 
         except urllib.error.HTTPError as error:
@@ -126,6 +140,7 @@ def validate_deployment(
         namespace=namespace,
         image=image,
         url=url,
+        invocation=invocation,
         success=False,
         attempts=maximum_attempts,
         status_code=last_status,
@@ -157,6 +172,7 @@ def _result(
     namespace: str,
     image: str,
     url: str,
+    invocation: InvocationProfile,
     success: bool,
     attempts: int,
     status_code: int | None,
@@ -172,6 +188,13 @@ def _result(
         namespace=namespace,
         image=image,
         url=url,
+        request_method=invocation.method,
+        request_path=invocation.path,
+        request_body_sha256=(
+            sha256(invocation.request_body).hexdigest()
+            if invocation.request_body is not None
+            else None
+        ),
         success=success,
         attempts=attempts,
         status_code=status_code,

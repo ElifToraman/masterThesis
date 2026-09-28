@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from controller.function_profiles import InvocationProfile
+
 
 @dataclass(frozen=True)
 class BenchmarkRequest:
@@ -11,13 +13,10 @@ class BenchmarkRequest:
     benchmark_service_name: str
     namespace: str
     image_reference: str
+    invocation: InvocationProfile
     minimum_scale: int = 1
     maximum_scale: int = 1
     container_concurrency: int = 1
-
-    http_method: str = "GET"
-    request_body: bytes | None = None
-    content_type: str | None = None
 
     warmup_requests: int = 3
     measured_requests: int = 20
@@ -52,11 +51,6 @@ class BenchmarkRequest:
         if not self.image_reference.strip():
             raise ValueError(
                 "image_reference must not be empty"
-            )
-
-        if self.http_method not in {"GET", "POST"}:
-            raise ValueError(
-                "http_method must be GET or POST"
             )
 
         if self.warmup_requests < 0:

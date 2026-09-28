@@ -8,6 +8,7 @@ from concurrent.futures import (
     ThreadPoolExecutor,
 )
 from datetime import datetime, timezone
+from hashlib import sha256
 
 from .benchmark_resource_sampler import (
     BenchmarkResourceSample,
@@ -113,6 +114,13 @@ class BenchmarkService:
                 image_reference=request.image_reference,
                 function_version=request.function_version,
                 endpoint=endpoint,
+                request_method=request.invocation.method,
+                request_path=request.invocation.path,
+                request_body_sha256=(
+                    sha256(request.invocation.request_body).hexdigest()
+                    if request.invocation.request_body is not None
+                    else None
+                ),
                 deployment_duration_ms=round(
                     deployment_duration_ms,
                     3,
@@ -366,17 +374,7 @@ class BenchmarkService:
         endpoint: str,
         request: BenchmarkRequest,
     ) -> tuple[float, int]:
-        headers: dict[str, str] = {}
-
-        if request.content_type is not None:
-            headers["Content-Type"] = request.content_type
-
-        http_request = urllib.request.Request(
-            url=endpoint,
-            data=request.request_body,
-            headers=headers,
-            method=request.http_method,
-        )
+        http_request = request.invocation.make_request(endpoint)
 
         started_at = time.perf_counter()
 
@@ -385,7 +383,16 @@ class BenchmarkService:
                 http_request,
                 timeout=request.request_timeout_seconds,
             ) as response:
-                response.read()
+                body = response.read()
+
+                validation_error = (
+                    request.invocation.validate_response_body(body)
+                )
+                if validation_error is not None:
+                    raise RuntimeError(
+                        "Function response validation failed: "
+                        f"{validation_error}"
+                    )
 
                 latency_ms = (
                     time.perf_counter() - started_at

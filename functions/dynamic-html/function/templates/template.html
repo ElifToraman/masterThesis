@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Randomly generated data.</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  </head>
+  <body>
+    <div class="container">
+      <p>Welcome {{ username }}!</p>
+      <p>Data generated at: {{ cur_time }}!</p>
+      <p>Requested random numbers:</p>
+      <ul>
+        {% for number in random_numbers %}
+        <li>{{ number }}</li>
+        {% endfor %}
+      </ul>
+    </div>
+  </body>
+</html>

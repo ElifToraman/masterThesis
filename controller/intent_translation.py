@@ -136,6 +136,18 @@ MEASUREMENT_BINDINGS: Mapping[str, MeasurementBinding] = MappingProxyType(
             metric_id="application.latency",
             statistic="p95",
         ),
+        "benchmark/dynamic-html/p95_warm_latency_ms": MeasurementBinding(
+            metric_id="application.latency",
+            statistic="p95",
+        ),
+        "benchmark/graph-pagerank/p95_warm_latency_ms": MeasurementBinding(
+            metric_id="application.latency",
+            statistic="p95",
+        ),
+        "benchmark/gzip-compression/p95_warm_latency_ms": MeasurementBinding(
+            metric_id="application.latency",
+            statistic="p95",
+        ),
     }
 )
 
@@ -143,7 +155,10 @@ MEASUREMENT_BINDINGS: Mapping[str, MeasurementBinding] = MappingProxyType(
 def translate_intent(submission: IntentFunction) -> NormalizedIntent:
     return NormalizedIntent(
         objectives=tuple(
-            translate_requirement(requirement)
+            translate_requirement(
+                requirement,
+                function_name=submission.function.name,
+            )
             for requirement in submission.intent.objectives
         ),
         constraints=tuple(
@@ -158,7 +173,10 @@ def translate_constraint(
     submission: IntentFunction,
 ) -> NormalizedConstraint:
     if isinstance(constraint, Objective):
-        return translate_requirement(constraint)
+        return translate_requirement(
+            constraint,
+            function_name=submission.function.name,
+        )
 
     supported_targets = {
         submission.function.name,
@@ -194,7 +212,21 @@ def translate_constraint(
 
 def translate_requirement(
     requirement: Objective,
+    *,
+    function_name: str,
 ) -> NormalizedRequirement:
+    expected_binding = (
+        f"benchmark/{function_name}/p95_warm_latency_ms"
+    )
+    if (
+        requirement.measured_by in MEASUREMENT_BINDINGS
+        and requirement.measured_by != expected_binding
+    ):
+        raise IntentSemanticError(
+            f"{requirement.name}: measuredBy must match the submitted "
+            f"function; expected {expected_binding!r}"
+        )
+
     binding = MEASUREMENT_BINDINGS.get(requirement.measured_by)
 
     if binding is None:

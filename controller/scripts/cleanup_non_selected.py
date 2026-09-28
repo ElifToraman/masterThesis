@@ -29,13 +29,23 @@ def service_exists(
             service_name,
             "-n",
             namespace,
+            "--ignore-not-found",
+            "-o",
+            "name",
         ],
         text=True,
         capture_output=True,
         check=False,
     )
 
-    return result.returncode == 0
+    if result.returncode != 0:
+        output = result.stdout.strip() or result.stderr.strip()
+        raise RuntimeError(
+            f"Failed to inspect {service_name} on "
+            f"{kubernetes_context}: {output}"
+        )
+
+    return bool(result.stdout.strip())
 
 
 def delete_service(

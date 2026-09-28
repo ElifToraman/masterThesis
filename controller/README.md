@@ -4,8 +4,9 @@ This directory contains the active Python controller for the master's thesis
 prototype **Intent-Based Orchestration of Serverless Applications at the
 Edge**.
 
-The current controller supports the plain `hello` Knative function. It does
-not use `hello-instrumented` or a function chain.
+The controller supports three independent benchmark functions—Dynamic HTML,
+Graph PageRank, and gzip compression—plus `hello` as a smoke test. It does not
+use a function chain.
 
 For the complete architecture, technologies, algorithms, operating procedure,
 result layout, and limitations, read the repository
@@ -20,7 +21,7 @@ REST IntentFunction submission
   -> collect physical VM, node, and pod metrics
   -> evaluate feasibility and intent
   -> select the lowest-score suitable cluster
-  -> deploy and validate hello
+  -> deploy and validate the submitted function
   -> clean the non-selected cluster
   -> continuously monitor the deployment and both clusters
   -> automatically re-evaluate persistent intent violations
@@ -38,6 +39,7 @@ REST IntentFunction submission
 | `execution_validator.py` | Invokes the final URL and writes execution evidence |
 | `post_deployment_monitor.py` | Sliding-window probes, all-cluster resource snapshots, intent evaluation, and guarded remediation trigger |
 | `runtime_config.py` | Loads submission, cluster, policy, and operational runtime configuration |
+| `function_profiles.py` | Loads the allowlist, fixed HTTP inputs, response contracts, and per-function benchmark overrides |
 | `intent_function_parser.py` | Parses and validates YAML/JSON IntentFunction documents |
 | `image_resolver.py` | Maps the logical image to each local edge registry |
 | `benchmarking/` | Temporary Knative deployment, concurrent load generation, resource sampling, and JSONL persistence |
@@ -47,8 +49,9 @@ REST IntentFunction submission
 | `config/clusters.yaml` | Cluster contexts, hosts, Prometheus endpoints, and registries |
 | `config/policy.json` | Feasibility constants, normalization references, and score weights |
 | `config/runtime.yaml` | Controller-owned benchmark, validation, continuous-monitor, and closed-loop guard settings |
+| `config/function-profiles.yaml` | Reproducible invocation contract for each supported function |
 | `config/knative-autoscaling-policy.json` | Common platform-level replica bounds for reproducible experiments |
-| `examples/hello-intent-function.yaml` | Active user submission example |
+| `examples/*-intent-function.yaml` | Independent hello and benchmark-function submissions |
 | `systemd/` | Persistent API and Prometheus port-forward service templates |
 
 Preview or apply the common Knative autoscaling policy on every configured
@@ -83,7 +86,7 @@ curl -s http://127.0.0.1:8088/healthz \
 
 curl -s -X POST \
   -H 'Content-Type: application/yaml' \
-  --data-binary @controller/examples/hello-intent-function.yaml \
+  --data-binary @controller/examples/graph-pagerank-intent-function.yaml \
   http://127.0.0.1:8088/v1/orchestrations \
   | python3 -m json.tool
 ```
@@ -103,6 +106,34 @@ curl -s \
 ```
 
 After success, invoke the returned `function_url` directly from the Mac.
+
+## Independent Function Pilot and Evaluation
+
+Run five randomized repetitions of all three functions through the same REST
+workflow:
+
+```bash
+python3 -m controller.scripts.run_independent_experiments \
+  --phase pilot \
+  --repetitions 5 \
+  --random-seed 42 \
+  --output controller/results/experiment-series/pilot.json
+```
+
+Manual submissions stop the prior monitor, and their orchestrator removes all
+supported function deployments from every candidate before benchmarking. The
+cleanup evidence is stored under the run. Automatic closed-loop runs skip
+that isolation cleanup so an existing placement remains available during
+re-evaluation.
+
+Calibrate per-function thresholds from only the pilot manifest:
+
+```bash
+python3 -m controller.scripts.calibrate_latency_slos \
+  --experiment-manifest controller/results/experiment-series/pilot.json \
+  --minimum-samples-per-cluster 5 \
+  --output controller/results/calibration/latency-slos.json
+```
 
 ## Reproducible Closed-Loop Experiment
 
@@ -155,6 +186,7 @@ results/runs/<run-id>/submission.yaml
 results/runs/<run-id>/normalized-intent.json
 results/runs/<run-id>/status.json
 results/runs/<run-id>/orchestrator.log
+results/runs/<run-id>/pre-run-cleanup.json
 results/runs/<run-id>/placement-monitoring/snapshot.json
 results/runs/<run-id>/placement-monitoring/raw-metrics/metrics_<index>.csv
 results/runs/<run-id>/decision.json

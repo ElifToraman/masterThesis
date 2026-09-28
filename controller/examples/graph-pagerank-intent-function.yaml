@@ -1,0 +1,28 @@
+apiVersion: intent.elif.dev/v1
+kind: IntentFunction
+
+metadata:
+  name: graph-pagerank-intent-function
+
+spec:
+  function:
+    name: graph-pagerank
+    namespace: default
+    serviceName: graph-pagerank
+    version: sebs-b37f475-v1
+    runtime: knative
+    image: elif/graph-pagerank:v1
+
+  intent:
+    targetRef:
+      kind: KnativeService
+      name: default/graph-pagerank
+
+    objectives:
+      - name: graph-pagerank-p95-latency
+        description: Provisional pilot guardrail; calibrate before evaluation
+        operator: "<="
+        value: 10000
+        unit: ms
+        measuredBy: benchmark/graph-pagerank/p95_warm_latency_ms
+        enforcement: soft

@@ -1,0 +1,28 @@
+apiVersion: intent.elif.dev/v1
+kind: IntentFunction
+
+metadata:
+  name: dynamic-html-intent-function
+
+spec:
+  function:
+    name: dynamic-html
+    namespace: default
+    serviceName: dynamic-html
+    version: sebs-b37f475-v1
+    runtime: knative
+    image: elif/dynamic-html:v1
+
+  intent:
+    targetRef:
+      kind: KnativeService
+      name: default/dynamic-html
+
+    objectives:
+      - name: dynamic-html-p95-latency
+        description: Provisional pilot guardrail; calibrate before evaluation
+        operator: "<="
+        value: 10000
+        unit: ms
+        measuredBy: benchmark/dynamic-html/p95_warm_latency_ms
+        enforcement: soft

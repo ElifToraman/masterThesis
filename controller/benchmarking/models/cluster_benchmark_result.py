@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from datetime import datetime
-from statistics import mean
 
 @dataclass(frozen=True)
 class ClusterBenchmarkResult:
@@ -19,6 +17,9 @@ class ClusterBenchmarkResult:
     benchmark_service_name: str
     image_reference: str
     endpoint: str
+    request_method: str
+    request_path: str
+    request_body_sha256: str | None
 
     deployment_duration_ms: float
 

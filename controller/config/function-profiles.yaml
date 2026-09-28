@@ -1,0 +1,46 @@
+# Controller-owned, reproducible invocation contracts. User submissions select
+# a supported function but cannot alter the workload used to compare clusters.
+functions:
+  hello:
+    invocation:
+      method: GET
+      path: /
+
+  dynamic-html:
+    invocation:
+      method: POST
+      path: /
+      jsonBody:
+        username: benchmark-user
+        random_len: 1000
+        seed: 42
+      expectedJson:
+        benchmark: dynamic-html
+        success: true
+
+  graph-pagerank:
+    invocation:
+      method: POST
+      path: /
+      jsonBody:
+        size: 10000
+        seed: 42
+      expectedJson:
+        benchmark: graph-pagerank
+        success: true
+    benchmark:
+      concurrency: 2
+      requestTimeoutSeconds: 30
+
+  gzip-compression:
+    invocation:
+      method: POST
+      path: /
+      jsonBody:
+        file_size_mb: 1
+      expectedJson:
+        benchmark: gzip-compression
+        success: true
+    benchmark:
+      concurrency: 2
+      requestTimeoutSeconds: 30

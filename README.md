@@ -4,24 +4,25 @@ Master's thesis research prototype for automatically placing a Knative
 serverless function on one of multiple independent edge clusters according to
 a user-defined intent.
 
-The current evaluated application is the plain `hello` function. The older
-`hello-instrumented` function and function-chain experiments are not part of
-the current controller workflow.
+The evaluated applications are three independent benchmark functions:
+SeBS Dynamic HTML, SeBS Graph PageRank, and FunctionBench gzip compression.
+The plain `hello` function remains available as a smoke test. Function-chain
+experiments are not part of the current controller workflow.
 
 ## Current Status
 
 The implemented system supports the following end-to-end flow:
 
 ```text
-User submits hello function + intent through REST
+User submits one supported function + intent through REST
   -> controller validates and stores the request
   -> controller benchmarks every candidate cluster
   -> controller collects VM, Kubernetes node, and pod metrics
   -> decision policy checks feasibility and intent satisfaction
   -> decision policy selects one edge cluster
-  -> controller deploys hello as a Knative Service
+  -> controller deploys the selected function as a Knative Service
   -> controller invokes and validates the final deployment
-  -> controller removes hello from non-selected clusters
+  -> controller removes the function from non-selected clusters
   -> controller continuously monitors the deployment and all candidates
   -> persistent intent violation starts an automatic re-evaluation
   -> controller retains or migrates the placement and continues monitoring
@@ -89,7 +90,7 @@ controller accesses them automatically.
 | Chameleon Cloud | Provides the controller and edge virtual machines |
 | Ubuntu 22.04 | VM operating system |
 | Docker | Runs Kind nodes and local registries; builds the function image |
-| Local Docker registries | Store a cluster-accessible copy of the `hello` image for each edge VM |
+| Local Docker registries | Store cluster-accessible copies of every supported function image |
 | Kind | Creates a multi-node Kubernetes cluster inside each edge VM |
 | Kubernetes | Manages nodes, pods, services, resources, and scheduling inside each selected cluster |
 | Knative Serving | Deploys the serverless function, provides the public service URL, revisions, scale-to-zero, and min/max scale annotations |
@@ -119,6 +120,7 @@ oriented.
 │   ├── execution_validator.py
 │   ├── post_deployment_monitor.py
 │   ├── runtime_config.py
+│   ├── function_profiles.py
 │   ├── image_resolver.py
 │   ├── intent_function_parser.py
 │   ├── benchmarking/
@@ -129,17 +131,21 @@ oriented.
 │   │   └── collect_placement_metrics.py
 │   ├── config/
 │   │   ├── clusters.yaml
+│   │   ├── function-profiles.yaml
 │   │   ├── policy.json
 │   │   └── runtime.yaml
 │   ├── examples/
-│   │   └── hello-intent-function.yaml
+│   │   ├── dynamic-html-intent-function.yaml
+│   │   ├── graph-pagerank-intent-function.yaml
+│   │   └── gzip-compression-intent-function.yaml
 │   ├── systemd/
 │   ├── API.md
 │   └── README.md
-└── hello/
-    ├── function/
-    ├── Makefile
-    └── func.yaml
+├── functions/
+│   ├── dynamic-html/
+│   ├── graph-pagerank/
+│   └── gzip-compression/
+└── hello/                         # smoke test only
 ```
 
 ## User Input: IntentFunction
@@ -147,43 +153,45 @@ oriented.
 The REST client sends a single YAML or JSON document containing both the
 function description and its intent.
 
-The active example is:
+The evaluated examples are:
 
 ```text
-controller/examples/hello-intent-function.yaml
+controller/examples/dynamic-html-intent-function.yaml
+controller/examples/graph-pagerank-intent-function.yaml
+controller/examples/gzip-compression-intent-function.yaml
 ```
 
-Its main structure is:
+Their common structure is:
 
 ```yaml
 apiVersion: intent.elif.dev/v1
 kind: IntentFunction
 
 metadata:
-  name: hello-intent-function
+  name: graph-pagerank-intent-function
 
 spec:
   function:
-    name: hello
+    name: graph-pagerank
     namespace: default
-    serviceName: hello
-    version: hello-latest
+    serviceName: graph-pagerank
+    version: sebs-b37f475-v1
     runtime: knative
-    image: elif/hello:latest
+    image: elif/graph-pagerank:v1
 
   intent:
     targetRef:
       kind: KnativeService
-      name: default/hello
+      name: default/graph-pagerank
 
     objectives:
-      - name: hello-p95-latency
-        description: P95 warm latency must be <= 50 ms
+      - name: graph-pagerank-p95-latency
+        description: P95 warm latency objective
         operator: "<="
-        value: 50
+        value: 10000
         unit: ms
-        measuredBy: benchmark/hello/p95_warm_latency_ms
-        enforcement: hard
+        measuredBy: benchmark/graph-pagerank/p95_warm_latency_ms
+        enforcement: soft
 ```
 
 The parser validates the document against a closed schema and converts it into
@@ -206,10 +214,11 @@ lowercase DNS naming rules. `targetRef.kind` must be `KnativeService`, and its
 name. The only supported runtime is `knative`. Numeric values must have the
 declared type and be finite; YAML booleans are not accepted as numbers.
 
-The REST endpoint currently intentionally accepts only the plain `hello`
-function. Benchmark duration, validation retries, and monitoring intervals are
-not user intent, so they are kept in the controller-owned runtime
-configuration instead of this submission.
+The REST endpoint accepts only functions registered in
+`controller/config/function-profiles.yaml`. The profile fixes the HTTP method,
+request body, response contract, and optional benchmark overrides. Benchmark
+duration, validation retries, monitoring intervals, and workload inputs are
+controller-owned experiment settings rather than user intent.
 
 Users may optionally constrain Knative autoscaling under `intent.properties`:
 
@@ -275,12 +284,14 @@ placement ranking; a runtime miss is reported as `best-effort` and does not
 trigger migration. `weight` controls the relative score contribution of soft
 requirements and has no effect on hard feasibility checks.
 
-For the current `intent.elif.dev/v1` hello-function scope, the supported exact
-binding is:
+For the current `intent.elif.dev/v1` scope, the supported exact bindings are:
 
 | `measuredBy` | Canonical metric | Statistic | Units | Evaluation phases |
 |---|---|---|---|---|
 | `benchmark/hello/p95_warm_latency_ms` | `application.latency` | `p95` | milliseconds or seconds | placement and runtime |
+| `benchmark/dynamic-html/p95_warm_latency_ms` | `application.latency` | `p95` | milliseconds or seconds | placement and runtime |
+| `benchmark/graph-pagerank/p95_warm_latency_ms` | `application.latency` | `p95` | milliseconds or seconds | placement and runtime |
+| `benchmark/gzip-compression/p95_warm_latency_ms` | `application.latency` | `p95` | milliseconds or seconds | placement and runtime |
 
 The controller translates the binding and threshold into a normalized
 requirement before orchestration. Objective names and descriptions are never
@@ -447,7 +458,7 @@ same clusters.
 
 1. receives up to 1 MiB of YAML or JSON;
 2. validates the IntentFunction;
-3. confirms that the submission targets the supported `hello` function;
+3. confirms that the function has a controller-owned invocation profile;
 4. creates `controller/results/runs/<run-id>/`;
 5. saves the exact request as `submission.yaml`;
 6. saves its canonical machine-readable SLO as `normalized-intent.json`;
@@ -466,6 +477,11 @@ controller.scripts.deploy_selected
 controller.scripts.cleanup_non_selected
 ```
 
+Before a manual run, `cleanup_supported_services` removes earlier supported
+deployments from every candidate so each function is evaluated independently.
+Automatic closed-loop re-evaluations skip this pre-run cleanup and retain the
+current service until the replacement decision completes.
+
 All stages receive the same submission, cluster configuration, runtime
 configuration, policy configuration where applicable, and run ID. If a stage
 exits unsuccessfully, later stages do not run and the API marks the run
@@ -476,7 +492,7 @@ exits unsuccessfully, later stages do not run and the API marks the run
 For each configured cluster, the benchmark service:
 
 1. rewrites the logical image name for that cluster's registry;
-2. deploys a temporary Knative Service called `hello-benchmark`;
+2. deploys a temporary Knative Service called `<service>-benchmark`;
 3. waits for it to become Ready;
 4. records deployment duration;
 5. records the first invocation latency;
@@ -740,20 +756,69 @@ monitors the new deployment and all candidate clusters.
 The user submits a logical image:
 
 ```text
-elif/hello:latest
+elif/graph-pagerank:v1
 ```
 
 The controller resolves it per candidate:
 
 ```text
-vm1-cluster -> host.docker.internal:5000/elif/hello:latest
-vm2-cluster -> host.docker.internal:5001/elif/hello:latest
+vm1-cluster -> host.docker.internal:5000/elif/graph-pagerank:v1
+vm2-cluster -> host.docker.internal:5001/elif/graph-pagerank:v1
 ```
 
 The same image must already be present in both registries before a complete
-two-cluster benchmark. Image build and push utilities live under `hello/`.
+two-cluster benchmark. Image build and push utilities live under `functions/`.
 The controller currently orchestrates existing images; it does not build
 source code received in the REST request.
+
+Build and push every benchmark function from the Mac while both registry
+tunnels are active:
+
+```bash
+make -C functions check
+make -C functions build-push-all
+make -C functions verify-images
+```
+
+Each project uses an explicit versioned experiment tag (`v1`) and builds for
+`linux/amd64`. The aggregate target builds once for VM 1, tags the identical
+image for VM 2, and pushes both references.
+
+## Independent Benchmark Experiment
+
+Run a five-repetition randomized pilot through the REST API from the
+controller VM:
+
+```bash
+python3 -m controller.scripts.run_independent_experiments \
+  --phase pilot \
+  --repetitions 5 \
+  --random-seed 42 \
+  --output controller/results/experiment-series/pilot.json
+```
+
+The runner executes one function at a time. Each repetition contains every
+function exactly once, while the within-repetition order is deterministically
+randomized. The orchestration records pre-run cleanup evidence in
+`results/runs/<run-id>/pre-run-cleanup.json` so earlier deployments cannot
+contaminate the next function's placement measurements.
+
+Derive provisional p95 SLOs only from those pilot run IDs:
+
+```bash
+python3 -m controller.scripts.calibrate_latency_slos \
+  --experiment-manifest controller/results/experiment-series/pilot.json \
+  --minimum-samples-per-cluster 5 \
+  --distribution-percentile 95 \
+  --safety-margin 1.20 \
+  --output controller/results/calibration/latency-slos.json
+```
+
+Copy each recommended threshold into its example IntentFunction and choose the
+intended hard/soft enforcement before the evaluation phase. Then run a new
+series with `--phase evaluation` and a separate output manifest. Do not mix
+pilot records, function versions, or request-body hashes in calibration; the
+calibration command rejects those cases.
 
 ## Running a Complete Test from the Mac
 
@@ -778,14 +843,14 @@ curl -s http://127.0.0.1:8088/healthz \
   | python3 -m json.tool
 ```
 
-### Mac Terminal 2: submit hello
+### Mac Terminal 2: submit one benchmark function
 
 ```bash
 cd /Users/eliftoraman/masterThesis
 
 curl -s -X POST \
   -H 'Content-Type: application/yaml' \
-  --data-binary @controller/examples/hello-intent-function.yaml \
+  --data-binary @controller/examples/graph-pagerank-intent-function.yaml \
   http://127.0.0.1:8088/v1/orchestrations \
   | python3 -m json.tool
 ```
@@ -1030,7 +1095,6 @@ improvement threshold before migration.
 
 - Controller-specific index: `controller/README.md`
 - REST endpoint reference: `controller/API.md`
-- Active example submission:
-  `controller/examples/hello-intent-function.yaml`
+- Benchmark submissions: `controller/examples/*-intent-function.yaml`
 - Thesis system explanation:
   `docs/Intent_Based_Orchestration_System_Explanation.docx`

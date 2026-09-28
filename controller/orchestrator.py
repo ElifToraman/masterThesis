@@ -9,6 +9,11 @@ from pathlib import Path
 from controller.intent_function_parser import (
     parse_and_translate_intent_function_payload,
 )
+from controller.function_profiles import (
+    DEFAULT_FUNCTION_PROFILES_FILE,
+    load_function_profiles,
+    require_function_profile,
+)
 from controller.intent_translation import (
     load_normalized_intent,
     validate_location_constraint_clusters,
@@ -46,7 +51,7 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         description=(
             "Benchmark, select, deploy, and clean up "
-            "an intent-based hello function submission."
+            "an intent-based function submission."
         )
     )
     parser.add_argument(
@@ -80,6 +85,12 @@ def main(argv: list[str] | None = None) -> None:
         ),
     )
     parser.add_argument(
+        "--function-profiles",
+        type=Path,
+        default=DEFAULT_FUNCTION_PROFILES_FILE,
+        help="Path to controller-owned function invocation profiles.",
+    )
+    parser.add_argument(
         "--run-id",
         default=None,
         help=(
@@ -99,11 +110,13 @@ def main(argv: list[str] | None = None) -> None:
     cluster_config_file = args.cluster_config.expanduser().resolve()
     policy_config_file = args.policy_config.expanduser().resolve()
     runtime_config_file = args.runtime_config.expanduser().resolve()
+    function_profiles_file = args.function_profiles.expanduser().resolve()
 
     # Validate every non-intent input before performing any cluster mutation.
     clusters = load_cluster_configs(cluster_config_file)
     load_policy_config(policy_config_file)
     load_runtime_config(runtime_config_file)
+    profiles = load_function_profiles(function_profiles_file)
 
     run_id = args.run_id or uuid.uuid4().hex
 
@@ -146,12 +159,37 @@ def main(argv: list[str] | None = None) -> None:
         normalized_intent,
         set(clusters),
     )
+    require_function_profile(profiles, submission.function.name)
 
     placement_snapshot_file = (
         run_directory
         / "placement-monitoring"
         / "snapshot.json"
     )
+
+    control_loop_trigger_file = run_directory / "control-loop-trigger.json"
+    if not control_loop_trigger_file.is_file():
+        run_step(
+            "Remove supported deployments for independent-run isolation",
+            [
+                sys.executable,
+                "-m",
+                "controller.scripts.cleanup_supported_services",
+                "--cluster-config",
+                str(cluster_config_file),
+                "--function-profiles",
+                str(function_profiles_file),
+                "--namespace",
+                submission.function.namespace,
+                "--output",
+                str(run_directory / "pre-run-cleanup.json"),
+            ],
+        )
+    else:
+        print(
+            "Skipping independent-run cleanup for automatic control-loop "
+            "re-evaluation."
+        )
 
     common_arguments = [
         "--submission",
@@ -171,6 +209,8 @@ def main(argv: list[str] | None = None) -> None:
             *common_arguments,
             "--runtime-config",
             str(runtime_config_file),
+            "--function-profiles",
+            str(function_profiles_file),
         ],
     )
 
@@ -212,6 +252,8 @@ def main(argv: list[str] | None = None) -> None:
             *common_arguments,
             "--runtime-config",
             str(runtime_config_file),
+            "--function-profiles",
+            str(function_profiles_file),
         ],
     )
 

@@ -22,6 +22,11 @@ from controller.benchmarking.models import (
 from controller.image_resolver import (
     resolve_image_for_registry,
 )
+from controller.function_profiles import (
+    DEFAULT_FUNCTION_PROFILES_FILE,
+    load_function_profiles,
+    require_function_profile,
+)
 from controller.runtime_config import (
     DEFAULT_CLUSTER_CONFIG_FILE,
     DEFAULT_RUNTIME_CONFIG_FILE,
@@ -50,6 +55,11 @@ def main(argv: list[str] | None = None) -> None:
         default=DEFAULT_RUNTIME_CONFIG_FILE,
     )
     parser.add_argument(
+        "--function-profiles",
+        type=Path,
+        default=DEFAULT_FUNCTION_PROFILES_FILE,
+    )
+    parser.add_argument(
         "--run-id",
         default=None,
     )
@@ -62,6 +72,7 @@ def main(argv: list[str] | None = None) -> None:
     submission = load_submission(args.submission)
     clusters = load_cluster_configs(args.cluster_config)
     runtime_config = load_runtime_config(args.runtime_config)
+    profiles = load_function_profiles(args.function_profiles)
     vms_by_cluster = {
         name: cluster.create_vm()
         for name, cluster in clusters.items()
@@ -81,7 +92,11 @@ def main(argv: list[str] | None = None) -> None:
     )
 
     function = submission.function
-    benchmark_properties = runtime_config["benchmark"]
+    profile = require_function_profile(profiles, function.name)
+    benchmark_properties = {
+        **runtime_config["benchmark"],
+        **profile.benchmark,
+    }
 
     run_id = args.run_id or uuid.uuid4().hex
 
@@ -105,7 +120,7 @@ def main(argv: list[str] | None = None) -> None:
             ),
             namespace=function.namespace,
             image_reference=image_reference,
-            http_method="GET",
+            invocation=profile.invocation,
             warmup_requests=int(
                 benchmark_properties.get(
                     "warmupRequests",

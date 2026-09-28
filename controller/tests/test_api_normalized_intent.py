@@ -11,6 +11,7 @@ from pathlib import Path
 from controller.api_service import (
     OrchestrationManager,
     SubmissionValidationError,
+    validate_supported_submission,
 )
 from controller.intent_translation import load_normalized_intent
 from controller.tests.test_intent_translation import (
@@ -20,6 +21,66 @@ from controller.tests.test_intent_translation import (
 
 
 class APINormalizedIntentTests(unittest.TestCase):
+    def test_all_benchmark_examples_are_accepted(self) -> None:
+        examples = Path(__file__).resolve().parents[1] / "examples"
+
+        for name in (
+            "dynamic-html",
+            "graph-pagerank",
+            "gzip-compression",
+        ):
+            with self.subTest(function=name):
+                submission, normalized = validate_supported_submission(
+                    (examples / f"{name}-intent-function.yaml").read_bytes()
+                )
+                self.assertEqual(submission.function.name, name)
+                self.assertEqual(
+                    normalized.objectives[0].metric_id,
+                    "application.latency",
+                )
+
+    def test_rejects_function_without_controller_profile(self) -> None:
+        payload = copy.deepcopy(VALID_PAYLOAD)
+        payload["spec"]["function"]["name"] = "unknown"
+        payload["spec"]["function"]["serviceName"] = "unknown"
+        payload["spec"]["intent"]["targetRef"]["name"] = "default/unknown"
+
+        with self.assertRaisesRegex(
+            SubmissionValidationError,
+            "Unsupported function 'unknown'",
+        ):
+            validate_supported_submission(json.dumps(payload).encode("utf-8"))
+
+    def test_rejects_service_name_that_differs_from_profile_name(self) -> None:
+        payload = copy.deepcopy(VALID_PAYLOAD)
+        payload["spec"]["function"]["serviceName"] = "other-service"
+        payload["spec"]["intent"]["targetRef"]["name"] = (
+            "default/other-service"
+        )
+
+        with self.assertRaisesRegex(
+            SubmissionValidationError,
+            "serviceName must equal",
+        ):
+            validate_supported_submission(json.dumps(payload).encode("utf-8"))
+
+    def test_rejects_metric_binding_for_another_function(self) -> None:
+        example = (
+            Path(__file__).resolve().parents[1]
+            / "examples"
+            / "graph-pagerank-intent-function.yaml"
+        )
+        payload = example.read_text(encoding="utf-8").replace(
+            "benchmark/graph-pagerank/p95_warm_latency_ms",
+            "benchmark/hello/p95_warm_latency_ms",
+        )
+
+        with self.assertRaisesRegex(
+            SubmissionValidationError,
+            "measuredBy must match the submitted function",
+        ):
+            validate_supported_submission(payload.encode("utf-8"))
+
     def test_submission_persists_and_forwards_normalized_intent(self) -> None:
         commands: list[list[str]] = []
         command_received = threading.Event()

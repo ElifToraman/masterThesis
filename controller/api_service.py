@@ -16,6 +16,13 @@ from pathlib import Path
 from typing import Callable
 from urllib.parse import urlparse
 
+from controller.function_profiles import (
+    DEFAULT_FUNCTION_PROFILES_FILE,
+    FunctionProfile,
+    FunctionProfileError,
+    load_function_profiles,
+    require_function_profile,
+)
 from controller.intent_translation import (
     IntentSemanticError,
     load_normalized_intent,
@@ -81,6 +88,7 @@ class OrchestrationManager:
         cluster_config_file: Path = DEFAULT_CLUSTER_CONFIG_FILE,
         policy_config_file: Path = DEFAULT_POLICY_CONFIG_FILE,
         runtime_config_file: Path = DEFAULT_RUNTIME_CONFIG_FILE,
+        function_profiles_file: Path = DEFAULT_FUNCTION_PROFILES_FILE,
         command_runner: CommandRunner | None = None,
         enable_post_deployment_monitoring: bool = True,
     ) -> None:
@@ -88,6 +96,7 @@ class OrchestrationManager:
         self.cluster_config_file = cluster_config_file.resolve()
         self.policy_config_file = policy_config_file.resolve()
         self.runtime_config_file = runtime_config_file.resolve()
+        self.function_profiles_file = function_profiles_file.resolve()
         self._command_runner = (
             command_runner or self._run_subprocess
         )
@@ -109,7 +118,11 @@ class OrchestrationManager:
         *,
         trigger: dict | None = None,
     ) -> OrchestrationStatus:
-        _, normalized_intent = validate_hello_submission(raw_submission)
+        profiles = load_function_profiles(self.function_profiles_file)
+        _, normalized_intent = validate_supported_submission(
+            raw_submission,
+            profiles=profiles,
+        )
 
         from controller.runtime_config import load_cluster_configs
 
@@ -134,6 +147,13 @@ class OrchestrationManager:
 
             run_id = uuid.uuid4().hex
             self._active_run_id = run_id
+
+        # A new manual submission starts an independent experiment. Stop the
+        # previous probe loop before its service is removed by pre-run cleanup.
+        # Automatic control-loop reevaluations intentionally keep monitoring
+        # the current placement until the replacement run completes.
+        if trigger is None:
+            self._stop_current_monitor()
 
         run_directory = self.results_directory / "runs" / run_id
         run_directory.mkdir(parents=True, exist_ok=False)
@@ -342,6 +362,8 @@ class OrchestrationManager:
             str(self.policy_config_file),
             "--runtime-config",
             str(self.runtime_config_file),
+            "--function-profiles",
+            str(self.function_profiles_file),
             "--run-id",
             run_id,
         ]
@@ -436,6 +458,9 @@ class OrchestrationManager:
         return latest.run_id
 
     def shutdown(self) -> None:
+        self._stop_current_monitor()
+
+    def _stop_current_monitor(self) -> None:
         with self._monitor_lock:
             monitor = self._monitor
             self._monitor = None
@@ -474,8 +499,11 @@ class OrchestrationManager:
                 validate_semantics=False,
             )
         else:
-            submission, normalized_intent = validate_hello_submission(
-                source_payload
+            submission, normalized_intent = validate_supported_submission(
+                source_payload,
+                profiles=load_function_profiles(
+                    self.function_profiles_file
+                ),
             )
             write_normalized_intent(
                 normalized_intent,
@@ -487,6 +515,10 @@ class OrchestrationManager:
         )
         runtime_config = load_runtime_config(
             self.runtime_config_file
+        )
+        profile = require_function_profile(
+            load_function_profiles(self.function_profiles_file),
+            submission.function.name,
         )
         cluster_name = execution["cluster_name"]
         cluster = clusters.get(cluster_name)
@@ -525,6 +557,7 @@ class OrchestrationManager:
             output_directory=(
                 run_directory / "post-deployment"
             ),
+            invocation_profile=profile.invocation,
             interval_seconds=float(
                 monitoring_properties.get(
                     "intervalSeconds",
@@ -1123,31 +1156,48 @@ class ControllerAPIHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
-def validate_hello_submission(
+def validate_supported_submission(
     raw_submission: bytes,
+    *,
+    profiles: dict[str, FunctionProfile] | None = None,
 ) -> tuple[IntentFunction, NormalizedIntent]:
     try:
         from controller.intent_function_parser import (
             IntentFunctionParseError,
-            parse_and_translate_intent_function_payload,
+            parse_intent_function_payload,
         )
 
-        submission, normalized_intent = (
-            parse_and_translate_intent_function_payload(raw_submission)
+        submission = parse_intent_function_payload(
+            raw_submission,
+            validate_semantics=False,
         )
     except IntentFunctionParseError as error:
         raise SubmissionValidationError(
             f"Invalid IntentFunction submission: {error}"
         ) from error
 
-    if (
-        submission.function.name != "hello"
-        or submission.function.service_name != "hello"
-    ):
-        raise SubmissionValidationError(
-            "This controller currently accepts only the "
-            "'hello' function with serviceName 'hello'"
+    try:
+        require_function_profile(
+            profiles or load_function_profiles(),
+            submission.function.name,
         )
+    except FunctionProfileError as error:
+        raise SubmissionValidationError(str(error)) from error
+
+    if submission.function.service_name != submission.function.name:
+        raise SubmissionValidationError(
+            "spec.function.serviceName must equal the supported "
+            f"function name {submission.function.name!r}"
+        )
+
+    try:
+        from controller.intent_translation import translate_intent
+
+        normalized_intent = translate_intent(submission)
+    except IntentSemanticError as error:
+        raise SubmissionValidationError(
+            f"IntentFunction semantics are invalid: {error}"
+        ) from error
 
     return submission, normalized_intent
 
@@ -1198,6 +1248,11 @@ def main(argv: list[str] | None = None) -> None:
         type=Path,
         default=DEFAULT_RUNTIME_CONFIG_FILE,
     )
+    parser.add_argument(
+        "--function-profiles",
+        type=Path,
+        default=DEFAULT_FUNCTION_PROFILES_FILE,
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(
@@ -1218,6 +1273,7 @@ def main(argv: list[str] | None = None) -> None:
     load_cluster_configs(args.cluster_config)
     load_policy_config(args.policy_config)
     load_runtime_config(args.runtime_config)
+    load_function_profiles(args.function_profiles)
 
     manager = OrchestrationManager(
         results_directory=(
@@ -1226,6 +1282,7 @@ def main(argv: list[str] | None = None) -> None:
         cluster_config_file=args.cluster_config,
         policy_config_file=args.policy_config,
         runtime_config_file=args.runtime_config,
+        function_profiles_file=args.function_profiles,
     )
     resumed_run = manager.resume_latest_monitoring()
 

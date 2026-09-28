@@ -1,19 +1,23 @@
 # Intent Controller REST API
 
-The API currently accepts only the `hello` IntentFunction. It runs the
-existing benchmark, monitoring, decision, Knative deployment, final
-invocation, and cleanup workflow asynchronously.
+The API accepts only functions registered in
+`controller/config/function-profiles.yaml`: `hello`, `dynamic-html`,
+`graph-pagerank`, and `gzip-compression`. It runs the benchmark, monitoring,
+decision, Knative deployment, final invocation, and cleanup workflow
+asynchronously.
 
 The submitted IntentFunction contains the function and user intent.
 Controller operational parameters are deliberately separate:
 
 ```text
 controller/config/runtime.yaml
+controller/config/function-profiles.yaml
 ```
 
-That file controls benchmark load, final invocation validation,
-post-deployment monitoring, and automatic control-loop guards. REST clients
-cannot change those experiment parameters inside their intent submission.
+These files control benchmark load, fixed per-function HTTP inputs and
+response contracts, final validation, post-deployment monitoring, and
+automatic control-loop guards. REST clients cannot change those experiment
+parameters inside their intent submission.
 
 IntentFunction admission uses a closed schema. Unknown fields, duplicate YAML
 keys, missing required fields, wrong types, non-finite numbers, unsupported
@@ -44,7 +48,8 @@ cd ~/masterThesis
 python3 -m controller.api_service \
   --host 127.0.0.1 \
   --port 8088 \
-  --runtime-config controller/config/runtime.yaml
+  --runtime-config controller/config/runtime.yaml \
+  --function-profiles controller/config/function-profiles.yaml
 ```
 
 From the Mac, create an SSH tunnel:
@@ -61,13 +66,13 @@ Check health:
 curl http://127.0.0.1:8088/healthz
 ```
 
-Submit the `hello` YAML:
+Submit one independent benchmark function:
 
 ```bash
 curl -i \
   -X POST \
   -H 'Content-Type: application/yaml' \
-  --data-binary @controller/examples/hello-intent-function.yaml \
+  --data-binary @controller/examples/graph-pagerank-intent-function.yaml \
   http://127.0.0.1:8088/v1/orchestrations
 ```
 
@@ -80,6 +85,11 @@ curl http://127.0.0.1:8088/v1/orchestrations/<run-id>
 Possible states are `accepted`, `running`, `succeeded`, and `failed`.
 Artifacts and the orchestrator log are stored under
 `controller/results/runs/<run-id>/`.
+
+For manual submissions, the first orchestration stage deletes all supported
+function services from every candidate and records the result in
+`pre-run-cleanup.json`. This makes sequential benchmark-function trials
+independent. Automatic control-loop reevaluations skip this deletion.
 
 Before making the decision, the orchestration runs an explicit placement
 monitoring stage. Its exact decision input is stored as:
@@ -95,8 +105,9 @@ metrics before using it. The orchestration status response exposes the path as
 
 After successful deployment, the status response also contains
 `selected_cluster` and `function_url`. The API continuously invokes the
-selected `hello` URL and collects VM, node, and pod metrics from every
-configured candidate cluster. Read its sliding-window intent evaluation with:
+selected function URL using its fixed profile and collects VM, node, and pod
+metrics from every configured candidate cluster. Read its sliding-window
+intent evaluation with:
 
 ```bash
 curl \
@@ -145,6 +156,8 @@ python3 -m controller.scripts.run_control_loop_experiment \
 
 This records the controlled external workload and follows the automatic run;
 it does not bypass the REST API or override the placement policy.
+The current controlled-load generator uses the `hello`-specific `work` query
+parameter; use it only for the hello smoke-test control-loop demonstration.
 
 Only one orchestration may run at a time. A second submission receives
 `409 Conflict`. This protects the shared cluster deployments and result
