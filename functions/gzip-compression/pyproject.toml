@@ -1,5 +1,6 @@
 [project]
-name = "gzip-compression-function"
+# Knative's generated service depends on the local distribution "function".
+name = "function"
 description = "Knative adapter for the FunctionBench gzip benchmark"
 version = "1.0.0"
 requires-python = ">=3.10"

@@ -1,5 +1,6 @@
 [project]
-name = "dynamic-html-function"
+# Knative's generated service depends on the local distribution "function".
+name = "function"
 description = "Knative adapter for the SeBS dynamic HTML benchmark"
 version = "1.0.0"
 requires-python = ">=3.10"

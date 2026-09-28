@@ -5,6 +5,8 @@ runtime: python
 registry: host.docker.internal:5000/elif
 image: host.docker.internal:5000/elif/gzip-compression:v1
 namespace: default
+# Knative func uses a nonzero creation timestamp to recognize initialization.
+created: 2026-09-28T13:38:28Z
 build:
   builder: s2i
 deploy:
