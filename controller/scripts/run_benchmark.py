@@ -142,7 +142,7 @@ def main(argv: list[str] | None = None) -> None:
             measurement_duration_seconds=float(
                 benchmark_properties.get(
                     "durationSeconds",
-                    15,
+                    60,
                 )
             ),
             resource_sample_interval_seconds=float(
@@ -151,6 +151,10 @@ def main(argv: list[str] | None = None) -> None:
                     1,
                 )
             ),
+            resource_warmup_timeout_seconds=float(
+                benchmark_properties["resourceWarmupTimeoutSeconds"]
+            ),
+            minimum_resource_samples=int(benchmark_properties["minimumResourceSamples"]),
             request_timeout_seconds=float(
                 benchmark_properties["requestTimeoutSeconds"]
             ),
@@ -195,6 +199,8 @@ def main(argv: list[str] | None = None) -> None:
             f"throughput="
             f"{result.throughput_requests_per_second:.2f} req/s",
             f"concurrency={result.benchmark_concurrency}",
+            f"resource_samples={result.resource_sample_count}",
+            f"resource_warmup={result.resource_warmup_duration_seconds:.1f}s",
             f"cpu_avg={result.average_cpu_usage_cores}",
             f"cpu_peak={result.peak_cpu_usage_cores}",
             f"mem_avg={result.average_memory_usage_bytes}",

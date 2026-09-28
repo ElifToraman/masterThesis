@@ -62,6 +62,34 @@ python3 -m controller.scripts.configure_knative_autoscaling
 python3 -m controller.scripts.configure_knative_autoscaling --apply
 ```
 
+## Benchmark resource measurements
+
+Before measuring latency, the controller sends warm-up traffic until Prometheus
+has CPU rates and memory values for **every regular container** in the live
+benchmark pod, including `user-container` and `queue-proxy`. This wait is bounded
+by `benchmark.resourceWarmupTimeoutSeconds` (90 seconds). Warm-up requests do not
+enter the measured latency distribution. The measured load then runs for
+`benchmark.durationSeconds` (60 seconds).
+
+The benchmark collector reads raw per-container query results rather than the
+general monitoring collector's zero-filled pod summaries. An absent rate is
+unavailable data, not zero CPU consumption. Collection is pinned to the current
+pod names; a prior run's deleted pods and proxy-only observations are excluded.
+A sample counts only when all containers have fresh CPU and memory timestamps.
+Polling the same scrape repeatedly does not create new samples.
+
+At least `benchmark.minimumResourceSamples` (3) complete, distinct samples are
+required. A warm-up timeout or insufficient samples fails that candidate's
+benchmark explicitly rather than providing misleading resource estimates to
+placement. A real observed CPU rate of zero remains valid. CPU and memory totals
+include the application and Knative proxy containers; rates use a one-minute
+lookback and are not instantaneous utilization measurements.
+
+Successful benchmark JSONL records include `resource_metrics_method`,
+`resource_warmup_duration_seconds`, `resource_sample_count`, and `resource_samples`
+(values plus original cAdvisor timestamps). Use a new pilot manifest after this
+change; older 15-second trials used a different measurement procedure.
+
 ## REST Quick Start
 
 The REST API runs as `intent-controller-api.service` on the controller VM at

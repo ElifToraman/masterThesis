@@ -23,6 +23,8 @@ class BenchmarkRequest:
     concurrency: int = 1
     measurement_duration_seconds: float = 0.0
     resource_sample_interval_seconds: float = 1.0
+    resource_warmup_timeout_seconds: float = 90.0
+    minimum_resource_samples: int = 3
 
     request_timeout_seconds: float = 10.0
     deployment_timeout_seconds: float = 180.0
@@ -79,6 +81,11 @@ class BenchmarkRequest:
                 "resource_sample_interval_seconds must be "
                 "greater than zero"
             )
+
+        if self.resource_warmup_timeout_seconds <= 0:
+            raise ValueError("resource_warmup_timeout_seconds must be positive")
+        if self.minimum_resource_samples < 1:
+            raise ValueError("minimum_resource_samples must be positive")
 
         if self.request_timeout_seconds <= 0:
             raise ValueError(

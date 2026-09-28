@@ -211,6 +211,15 @@ def load_runtime_config(
         minimum_exclusive=0,
         section="benchmark",
     )
+    benchmark.setdefault("resourceWarmupTimeoutSeconds", 90)
+    benchmark.setdefault("minimumResourceSamples", 3)
+    _require_number(
+        benchmark, "resourceWarmupTimeoutSeconds",
+        minimum_exclusive=0, section="benchmark",
+    )
+    _require_integer(
+        benchmark, "minimumResourceSamples", minimum=1, section="benchmark",
+    )
     _require_number(
         benchmark,
         "requestTimeoutSeconds",

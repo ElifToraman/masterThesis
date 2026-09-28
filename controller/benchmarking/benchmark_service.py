@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from threading import Event
 import urllib.error
 import urllib.request
 from concurrent.futures import (
@@ -8,6 +9,7 @@ from concurrent.futures import (
     ThreadPoolExecutor,
 )
 from datetime import datetime, timezone
+from dataclasses import asdict
 from hashlib import sha256
 
 from .benchmark_resource_sampler import (
@@ -85,6 +87,10 @@ class BenchmarkService:
                     request=request,
                 )
 
+            resource_warmup_seconds = self._wait_for_resource_metrics(
+                cluster_name=cluster_name, endpoint=endpoint, request=request,
+            )
+
             (
                 warm_samples,
                 successful_requests,
@@ -100,6 +106,14 @@ class BenchmarkService:
             resource_summary = None
 
             if self._resource_sampler is not None:
+                if len(resource_samples) < request.minimum_resource_samples:
+                    raise RuntimeError(
+                        "Insufficient complete resource samples: "
+                        f"{len(resource_samples)}/{request.minimum_resource_samples}. "
+                        "CPU and memory must be present for every benchmark "
+                        "container, with fresh cAdvisor timestamps. Check "
+                        "Prometheus scraping or increase benchmark duration."
+                    )
                 resource_summary = self._resource_sampler.summarize(
                     resource_samples
                 )
@@ -138,6 +152,9 @@ class BenchmarkService:
                     measurement_duration_seconds,
                     3,
                 ),
+                resource_sample_count=len(resource_samples),
+                resource_warmup_duration_seconds=round(resource_warmup_seconds, 3),
+                resource_samples=tuple(asdict(sample) for sample in resource_samples),
                 average_cpu_usage_cores=(
                     resource_summary.average_cpu_usage_cores
                     if resource_summary is not None
@@ -166,6 +183,48 @@ class BenchmarkService:
                 namespace=request.namespace,
                 service_name=service_name,
             )
+
+    def _wait_for_resource_metrics(
+        self, *, cluster_name: str, endpoint: str, request: BenchmarkRequest,
+    ) -> float:
+        if self._resource_sampler is None:
+            return 0.0
+        arguments = {
+            "cluster_name": cluster_name,
+            "namespace": request.namespace,
+            "benchmark_service_name": request.benchmark_service_name,
+        }
+        self._resource_sampler.prepare(**arguments)
+        started_at = time.monotonic()
+        deadline = started_at + request.resource_warmup_timeout_seconds
+        stop = Event()
+        print(f"{cluster_name}: warming up until all container metrics are available", flush=True)
+        with ThreadPoolExecutor(max_workers=request.concurrency) as executor:
+            workers = [
+                executor.submit(self._duration_worker, endpoint, request, deadline, stop)
+                for _ in range(request.concurrency)
+            ]
+            try:
+                while time.monotonic() < deadline:
+                    if self._resource_sampler.sample(**arguments) is not None:
+                        break
+                    time.sleep(request.resource_sample_interval_seconds)
+                else:
+                    raise RuntimeError(
+                        "Timed out waiting for complete benchmark CPU and memory "
+                        "metrics. Missing data is not treated as zero usage."
+                    )
+            finally:
+                stop.set()
+                for worker in workers:
+                    worker.result()
+        elapsed = time.monotonic() - started_at
+        print(
+            f"{cluster_name}: complete container metrics ready after {elapsed:.1f}s; "
+            f"starting measured load ({request.measurement_duration_seconds:.0f}s)",
+            flush=True,
+        )
+        return elapsed
 
     def _run_measured_load(
         self,
@@ -273,12 +332,13 @@ class BenchmarkService:
         endpoint: str,
         request: BenchmarkRequest,
         deadline: float,
+        stop: Event | None = None,
     ) -> tuple[list[float], int, int]:
         samples: list[float] = []
         successful = 0
         failed = 0
 
-        while time.monotonic() < deadline:
+        while time.monotonic() < deadline and (stop is None or not stop.is_set()):
             result = self._measure_one(endpoint, request)
 
             if result is None:
@@ -360,7 +420,15 @@ class BenchmarkService:
                 ),
             )
 
-            if sample is not None:
+            # Re-querying the same scrape every second is not a new observation.
+            if sample is not None and (
+                not samples or all(
+                    new > old for new, old in zip(
+                        sample.observation_timestamps,
+                        samples[-1].observation_timestamps,
+                    )
+                )
+            ):
                 samples.append(sample)
 
             time.sleep(

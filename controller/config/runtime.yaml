@@ -8,8 +8,11 @@
 benchmark:
   warmupRequests: 5
   concurrency: 5
-  durationSeconds: 15
+  # cAdvisor is scraped every 10s; allow several distinct complete samples.
+  durationSeconds: 60
   resourceSampleIntervalSeconds: 1
+  resourceWarmupTimeoutSeconds: 90
+  minimumResourceSamples: 3
   requestTimeoutSeconds: 10
   deploymentTimeoutSeconds: 180
 

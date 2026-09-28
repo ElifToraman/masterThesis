@@ -33,6 +33,11 @@ class ClusterBenchmarkResult:
     benchmark_concurrency: int
     measurement_duration_seconds: float
 
+    resource_sample_count: int = 0
+    resource_warmup_duration_seconds: float = 0.0
+    resource_metrics_method: str = "complete-container-rate-1m-v1"
+    resource_samples: tuple[dict, ...] = ()
+
     average_cpu_usage_cores: float | None = None
     peak_cpu_usage_cores: float | None = None
     average_memory_usage_bytes: int | None = None
