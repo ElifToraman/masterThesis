@@ -8,6 +8,8 @@ import time
 import unittest
 from pathlib import Path
 
+import yaml
+
 from controller.api_service import (
     OrchestrationManager,
     SubmissionValidationError,
@@ -21,6 +23,42 @@ from controller.tests.test_intent_translation import (
 
 
 class APINormalizedIntentTests(unittest.TestCase):
+    def test_evaluation_examples_preserve_workloads_and_use_frozen_targets(
+        self,
+    ) -> None:
+        examples = Path(__file__).resolve().parents[1] / "examples"
+        for name, target in {
+            "dynamic-html": 50,
+            "graph-pagerank": 412,
+            "gzip-compression": 173,
+        }.items():
+            with self.subTest(function=name):
+                pilot = yaml.safe_load(
+                    (examples / f"{name}-intent-function.yaml").read_text()
+                )
+                source = (
+                    examples / "evaluation" / f"{name}-intent-function.yaml"
+                ).read_bytes()
+                evaluation = yaml.safe_load(source)
+                submission, normalized = validate_supported_submission(source)
+                self.assertEqual(submission.function.name, name)
+                self.assertEqual(
+                    pilot["spec"]["function"], evaluation["spec"]["function"]
+                )
+                self.assertEqual(
+                    pilot["spec"]["intent"]["targetRef"],
+                    evaluation["spec"]["intent"]["targetRef"],
+                )
+                pilot_objective = pilot["spec"]["intent"]["objectives"][0]
+                objective = evaluation["spec"]["intent"]["objectives"][0]
+                self.assertEqual(pilot_objective["value"], 10000)
+                self.assertEqual(objective["value"], target)
+                for key in ("name", "operator", "unit", "measuredBy", "enforcement"):
+                    self.assertEqual(objective[key], pilot_objective[key])
+                self.assertAlmostEqual(
+                    normalized.objectives[0].canonical_value, target / 1000
+                )
+
     def test_all_benchmark_examples_are_accepted(self) -> None:
         examples = Path(__file__).resolve().parents[1] / "examples"
 
@@ -54,9 +92,7 @@ class APINormalizedIntentTests(unittest.TestCase):
     def test_rejects_service_name_that_differs_from_profile_name(self) -> None:
         payload = copy.deepcopy(VALID_PAYLOAD)
         payload["spec"]["function"]["serviceName"] = "other-service"
-        payload["spec"]["intent"]["targetRef"]["name"] = (
-            "default/other-service"
-        )
+        payload["spec"]["intent"]["targetRef"]["name"] = "default/other-service"
 
         with self.assertRaisesRegex(
             SubmissionValidationError,

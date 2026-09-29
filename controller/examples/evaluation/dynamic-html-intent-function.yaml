@@ -1,0 +1,28 @@
+apiVersion: intent.elif.dev/v1
+kind: IntentFunction
+
+metadata:
+  name: dynamic-html-evaluation-intent-function
+
+spec:
+  function:
+    name: dynamic-html
+    namespace: default
+    serviceName: dynamic-html
+    version: sebs-b37f475-v1
+    runtime: knative
+    image: elif/dynamic-html:v1
+
+  intent:
+    targetRef:
+      kind: KnativeService
+      name: default/dynamic-html
+
+    objectives:
+      - name: dynamic-html-p95-latency
+        description: Frozen evaluation target from pilot-20260928T155603Z; 20% margin
+        operator: "<="
+        value: 50
+        unit: ms
+        measuredBy: benchmark/dynamic-html/p95_warm_latency_ms
+        enforcement: soft
